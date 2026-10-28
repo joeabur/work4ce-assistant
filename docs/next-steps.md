@@ -1,0 +1,13 @@
+# Next steps
+
+1. Preserve the passing 31-test vertical-slice baseline, including authenticated REST-to-MCP replacement and restart persistence. Add review/enable administration, bounded audit retention and nonblocking storage design. Complete acceptance H with a separate approved-response executor before declaring architecture completion.
+2. Use network-permitted commands for remote access. Read-only Git checks succeeded and showed no advertised refs before initial publication; preserve local work when synchronizing subsequent changes. Verify current package versions, official MCP documentation and security advisories. Add reproducible dependency and scanning evidence.
+3. Complete Phase 1 with PostgreSQL, SQLAlchemy/Alembic migrations, OIDC validation, production configuration rejection tests and explicit deployment trust boundaries.
+4. Add durable checkpoints with tested restart/resume, cancellation, idempotency, execution budgets and partial-result recovery. Local state records alone do not complete this feature.
+5. Build the provider-independent model gateway, structured planning boundary, data-sharing controls and labeled evaluations. Retain deterministic authorization and evidence validation.
+6. Expand demo scenarios and connector/CDK contract coverage, including poisoning, tenant substitution, malicious responses and resource exhaustion.
+7. Select one authorized live integration after infrastructure and credentials are available. Keep fixture-tested, integration-tested and live-verified states distinct.
+8. Add analyst-facing SOC workflows and dashboard incrementally. Implement response approvals and isolated execution only after the authorization lifecycle passes missing, expired, reused and mismatched approval tests.
+9. Complete production hardening: CI scans, SBOM, TLS, secrets lifecycle, rate limits, telemetry, load tests, recovery drills, deployment verification and security review.
+
+See the master specification for full phase acceptance criteria. Production remains no-go until evidence supports the required controls.

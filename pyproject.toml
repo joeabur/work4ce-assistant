@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "work4ce-assistant"
+version = "0.1.0"
+description = "Capability-driven security investigation foundation"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.141.1", "pydantic==2.13.4", "httpx==0.28.1",
+  "jsonschema==4.26.0", "mcp==1.29.0", "uvicorn==0.52.1",
+]
+
+[project.scripts]
+work4ce = "work4ce_assistant.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
