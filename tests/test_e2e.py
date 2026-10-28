@@ -20,11 +20,21 @@ def free_port():
 
 class VerticalSliceTests(unittest.TestCase):
     def test_authenticated_protocol_replacement_and_restart(self):
+        self.run_workflow()
+
+    @unittest.skipUnless(os.environ.get('WORK4CE_TEST_POSTGRES_URL'), 'PostgreSQL API integration requires WORK4CE_TEST_POSTGRES_URL')
+    def test_postgres_authenticated_protocol_replacement_and_restart(self):
+        from work4ce_assistant.storage import migrate
+        database = os.environ['WORK4CE_TEST_POSTGRES_URL']
+        migrate(database)
+        self.run_workflow(database)
+
+    def run_workflow(self, database=None):
         with tempfile.TemporaryDirectory() as directory:
             rest_port, api_port = free_port(), free_port()
             analyst, admin = secrets.token_urlsafe(40), secrets.token_urlsafe(40)
             env = {**os.environ, 'WORK4CE_DEMO_TOKEN':analyst, 'WORK4CE_ADMIN_TOKEN':admin,
-                   'WORK4CE_DB':str(Path(directory)/'demo.db'), 'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}'}
+                   'WORK4CE_AUTH_MODE':'demo', 'WORK4CE_MODE':'demo', 'WORK4CE_DB':database or str(Path(directory)/'demo.db'), 'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}'}
             log = open(Path(directory)/'services.log', 'w+')
             rest = subprocess.Popen([sys.executable,'-m','work4ce_assistant.reference_servers','rest','--port',str(rest_port)],
                                     env=env,stdout=log,stderr=log)

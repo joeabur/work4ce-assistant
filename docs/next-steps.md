@@ -1,8 +1,8 @@
 # Next steps
 
-1. Preserve the passing 31-test vertical-slice baseline, including authenticated REST-to-MCP replacement and restart persistence. Add review/enable administration, bounded audit retention and nonblocking storage design. Complete acceptance H with a separate approved-response executor before declaring architecture completion.
+1. Preserve the passing integration baseline, including authenticated REST-to-MCP replacement and restart persistence. Add review/enable administration, bounded audit retention and nonblocking storage design. Complete acceptance H with a separate approved-response executor before declaring architecture completion.
 2. Use network-permitted commands for remote access. Read-only Git checks succeeded and showed no advertised refs before initial publication; preserve local work when synchronizing subsequent changes. Verify current package versions, official MCP documentation and security advisories. Add reproducible dependency and scanning evidence.
-3. Complete Phase 1 with PostgreSQL, SQLAlchemy/Alembic migrations, OIDC validation, production configuration rejection tests and explicit deployment trust boundaries.
+3. Continue Phase 1 beyond the implemented PostgreSQL/SQLAlchemy/Alembic and fixture-tested OIDC adapter: verify a live synthetic IdP, secure TLS, database least privilege/RLS, credential lifecycle, backup/restore and explicit deployment trust boundaries. Keep production disabled.
 4. Add durable checkpoints with tested restart/resume, cancellation, idempotency, execution budgets and partial-result recovery. Local state records alone do not complete this feature.
 5. Build the provider-independent model gateway, structured planning boundary, data-sharing controls and labeled evaluations. Retain deterministic authorization and evidence validation.
 6. Expand demo scenarios and connector/CDK contract coverage, including poisoning, tenant substitution, malicious responses and resource exhaustion.

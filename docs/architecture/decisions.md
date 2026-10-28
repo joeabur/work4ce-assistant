@@ -26,11 +26,13 @@ The initial gateway permits authorized read-only synthetic capabilities. Resolve
 
 Bound arguments, output size, runtime and execution attempts. Do not automatically retry side-effecting operations. Sensitive response execution and approval tokens are intentionally absent; adding them requires a separate executor and immediate authorization revalidation.
 
-## ADR-005 — SQLite development persistence
+## ADR-005 — SQLAlchemy, Alembic and development storage
 
-Use SQLite for a self-contained local demonstration of report, evidence, audit and investigation-state persistence. This departs from the recommended PostgreSQL/SQLAlchemy/Alembic stack to avoid claiming an unconfigured production dependency. It is a development alternative only.
+The store now uses SQLAlchemy with bundled Alembic revision `0001_foundation`. SQLite paths/URLs remain the default and auto-migrate. Exact legacy SQLite schemas can be adopted without losing existing rows; unknown schemas are rejected. Back up useful data before upgrades.
 
-PostgreSQL support, migration discipline, encrypted storage, tenant row-level policies, backup/restore, retention and tamper-resistant remote audit are required before enterprise deployment. Persisted state alone does not establish resumable workflows.
+PostgreSQL uses psycopg, requires an explicit `database migrate` before startup, and is integration-tested against PostgreSQL 17.11 in an isolated digest-pinned container. Pools are bounded to four connections. This replaces the earlier SQLite-only persistence decision.
+
+The implementation remains synchronous and may block the API event loop. TLS, database least privilege/RLS, encrypted storage, backup/restore, retention and tamper-resistant remote audit remain required for enterprise deployment. Persisted state does not establish resumable workflows. See the database tutorial.
 
 ## ADR-006 — Deterministic first investigator
 
@@ -38,12 +40,16 @@ Use a deterministic bounded workflow for capability selection, event retrieval, 
 
 A future provider-independent model interface must consume untrusted telemetry as data, validate structured output, track cost and provenance, and remain unable to grant permissions. No live provider integration is claimed.
 
-## ADR-007 — Demo identity boundary
+## ADR-007 — Synthetic realm with interchangeable authentication
 
-Only demo mode is supported initially. Operator-supplied analyst and administration tokens must differ and each have at least 32 ASCII characters. No universal credentials are shipped. The server assigns the fixed `synthetic-demo` tenant and connector grants; client-supplied tenant or permission fields cannot change them. Production configuration must fail closed until real authentication is implemented.
+Only `WORK4CE_MODE=demo` is supported. Default demo authentication uses distinct operator-selected ASCII analyst/admin tokens of at least 32 characters. `WORK4CE_AUTH_MODE=oidc` instead verifies signed access tokens using an explicitly configured HTTPS issuer, dedicated API audience and JWKS URL. Demo tokens cannot fall back in OIDC mode.
+
+The OIDC verifier is fixture-tested with real RS256 signatures and mocked HTTPS. It enforces required identity/time claims, a one-hour lifetime, bounded JWKS fetching, a 300-second cache and 30-second refresh cooldown. Expired cache entries are not accepted during outages. No browser login or live IdP is claimed.
+
+Roles come only from a reviewed server-side subject-role mapping; duplicate keys are rejected. The server always assigns `synthetic-demo` and reviewed connector grants. JWT tenant/role claims cannot self-authorize. Production remains disabled pending broader identity, deployment and operational controls. See the OIDC tutorial.
 
 ## Initial execution path
 
 Authenticated API request → deterministic investigator → capability registry/resolver → independent policy → integration gateway → approved REST or MCP connector → schema validation → normalized source-attributed synthetic evidence → stored incident report and audit.
 
-The services are logical components, not a commitment to deploy independent microservices. PostgreSQL, OIDC, workflow workers, a dashboard and model-provider calls are future components with separate readiness requirements.
+The services are logical components, not a commitment to deploy independent microservices. PostgreSQL and the OIDC adapter are implemented with the evidence above. Workflow workers, a dashboard, model-provider calls and enterprise operations remain separate future work.

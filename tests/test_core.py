@@ -7,13 +7,14 @@ import unittest
 
 import httpx
 from pydantic import ValidationError
+from sqlalchemy import select, update
 
 from work4ce_assistant.api import CONNECTORS, PERMISSIONS, TENANT, Settings, create_app
 from work4ce_assistant.contracts import CapabilityManifest, ConnectorManifest, ExecutionContext, Work4ceError, digest
 from work4ce_assistant.fixtures import SEARCH_CAPABILITY, search_events
 from work4ce_assistant.gateway import Gateway
 from work4ce_assistant.investigation import Investigator
-from work4ce_assistant.storage import Store
+from work4ce_assistant.storage import Store, investigations
 
 
 def ctx(**updates):
@@ -116,7 +117,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.output = {'events': [{'summary': 'bad'}]}
         with self.assertRaises(Work4ceError):
             await Investigator(self.gateway, self.store).investigate(ctx(), 'PowerShell')
-        identity = self.store.db.execute('SELECT id FROM investigations').fetchone()[0]
+        with self.store.engine.connect() as connection:
+            identity = connection.execute(select(investigations.c.id)).scalar_one()
         self.assertEqual(self.store.get(TENANT, identity)['status'], 'failed')
         self.assertEqual(self.store.get(TENANT, identity)['report']['evidence'], [])
         self.assertIn(('capability.execute', 'demo-rest', 'failed'), self.store.audit_rows(TENANT))
@@ -181,7 +183,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         result = await Investigator(self.gateway, self.store).investigate(ctx(), 'PowerShell')
         with self.assertRaises(Work4ceError):
             self.store.get('other-tenant', result['id'])
-        self.store.db.execute('UPDATE investigations SET report=? WHERE id=?', ('{}', result['id']))
+        with self.store.engine.begin() as connection:
+            connection.execute(update(investigations).where(investigations.c.id == result['id']).values(report='{}'))
         with self.assertRaisesRegex(Work4ceError, 'integrity'):
             self.store.get(TENANT, result['id'])
 
@@ -207,7 +210,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.definition = cap.model_dump()
         with self.assertRaises(Work4ceError):
             await asyncio.wait_for(Investigator(self.gateway,self.store).investigate(ctx(),'PowerShell'), 1)
-        self.assertEqual(self.store.db.execute('SELECT status FROM investigations').fetchone()[0], 'failed')
+        with self.store.engine.connect() as connection:
+            self.assertEqual(connection.execute(select(investigations.c.status)).scalar_one(), 'failed')
 
 
 class PersistenceTests(unittest.TestCase):

@@ -1,30 +1,30 @@
 # Implementation progress
 
-The first synthetic vertical slice is `integration_tested`. The broader phases remain partial; this is not architecture completion or production readiness.
+The synthetic vertical slice and PostgreSQL store are `integration_tested`; the OIDC verifier/API adapter is `fixture_tested` with actual signatures and mocked HTTPS. The broader phases remain partial. Production mode is disabled.
 
 | Phase | State | Scope / remaining gate |
 |---|---|---|
-| 0 — Discovery and architecture | implemented | Master specification preserved; architecture, trust boundaries, threat model and initial acceptance plan documented |
-| 1 — Secure foundation | in_progress | Initial API, demo authentication, policy and local persistence targeted; PostgreSQL, migrations, OIDC and production operations pending |
-| 2 — Universal integration framework | in_progress | Versioned contracts, reviewed registration, resolver and read-only gateway integration-tested; complete CDK and production policy remain pending |
-| 3 — MCP infrastructure | in_progress | Official SDK stdio reference transport integration-tested; remote OAuth and broader compatibility pending |
-| 4 — Protocol independence | in_progress | Real API end-to-end replacement passed; full A–J architecture gate remains incomplete |
-| 5–7 — Runtime, evidence, demo | in_progress | Deterministic synthetic slice only; provider-independent LLM runtime, durable resume and broader scenarios pending |
-| 8 — First live integration | blocked | Requires authorized service, credentials and working network; no live verification |
-| 9–14 — SOC, dashboard, advanced features, response, CDK, hardening | planned | Not complete; see next steps and master specification |
+| 0 — Discovery and architecture | implemented | Specification, architecture, trust boundaries and initial threat model documented |
+| 1 — Secure foundation | in_progress | API, backend authorization, SQLAlchemy/Alembic, SQLite/PostgreSQL and OIDC JWT adapter implemented; enterprise identity operations, TLS/RLS and hardening pending |
+| 2 — Universal integration framework | in_progress | Reviewed contracts, registration, resolver and read-only gateway integration-tested; full CDK/production policy incomplete |
+| 3 — MCP infrastructure | in_progress | Official SDK local stdio transport integration-tested; remote OAuth and broader compatibility pending |
+| 4 — Protocol independence | in_progress | Real API REST/MCP replacement passed; full A–J architecture gate incomplete |
+| 5–7 — Runtime, evidence, demo | in_progress | Deterministic synthetic workflow only; LLM runtime, durable resume and broader scenarios pending |
+| 8 — First live integration | blocked | Requires an authorized service and infrastructure; no live vendor verification |
+| 9–14 — SOC, dashboard, advanced features, response, CDK, hardening | planned | Not complete |
 
-Initial repository inspection found an unborn local Git checkout containing no source files or commits. The initial read-only Git checks failed inside the command sandbox. Repeating them with network permission succeeded and returned no advertised refs: the remote had no `main` branch to fetch before initial publication. The earlier diagnosis of a broken proxy was incorrect.
-
-The available runtime includes Python 3.12 and installed FastAPI, Pydantic, JSON Schema, httpx and official MCP packages. Their latest stable status and advisories could not be checked online. Preserve this limitation when reporting dependency readiness.
+Initial discovery found an unborn checkout. Read-only Git checks failed inside the command sandbox, but network-permitted checks succeeded and returned no advertised refs before initial publication. Those initial errors did not establish a broken proxy. Repository publication does not establish deployment validation.
 
 ## Verification record
 
-`./.venv/bin/python -m unittest discover -s tests -v`: **31 passed in 15.220 seconds**. The run contained 24 core/API/persistence tests, six transport tests and one real API/REST/MCP end-to-end test. The end-to-end path disabled REST, selected MCP without changing investigator logic, preserved the report across API restart and retained connector revocation.
+`.venv/bin/python scripts/test_postgres.py` completed **70 tests in 26.290 seconds with zero skips** against a real PostgreSQL 17.11 container and SQLite. The run contained 17 verifier, eight OIDC API, 24 core, two real end-to-end, 13 storage/migration and six transport tests.
 
-`./scripts/setup.sh` completed editable installation and `pip check` successfully using the prepared runtime. The 31-package lock pins the observed Python 3.12/Linux dependency closure. A clean online install, artifact-hash verification, current advisories, CI and container execution are unverified.
+OIDC verification has 17 focused tests using actual RSA signatures and mocked HTTPS JWKS. API tests verify signed-token authentication, server-assigned tenant/roles, ignored token-supplied grants, rejected demo fallback and redacted service failures. No live IdP or browser login was verified.
 
-Verified controls include authentication, trusted tenant and connector grants, fail-closed read policy, definition-integrity checks before schema use, JSON Schema validation, bounded outputs/deadlines, a 16 KiB pre-parse request-body limit, evidence hashes, tenant-scoped report persistence and audit records. Four concurrent investigation slots are configured; saturation testing is pending. `/health` is liveness; authenticated `/ready` probes enabled connectors.
+Database checks cover versioned migrations, explicit PostgreSQL migration requirements, SQLite legacy adoption/data preservation, reports, audit and connector state. Real API/REST/MCP testing verifies authorized connector replacement without investigator changes, report persistence and revocation across restart.
 
-These tests do not complete OIDC, PostgreSQL, resumable workflows, model-provider integration or sensitive response approval tests.
+Setup refreshed the editable installation, verified all 40 locked versions and passed `pip check`. Clean installation of all 40 distributions in an isolated virtual environment also passed `pip check`. Wheel build and installed-wheel migration/report-persistence checks passed with isolated imports outside the source tree, verifying bundled migrations. The generated lock pins Python 3.12/Linux dependencies, build tooling and development verification packages. It has no downloaded-artifact hashes. Current advisories, remote CI, Compose startup and application container deployment and live identity-provider checks are unrun.
 
-Reusable environment `install_script` and `start_skill` were saved successfully as a draft. Publication and fresh-task restoration are unverified. Review and save the draft in environment settings, then publish when appropriate.
+Controls include trusted tenant/connector grants, read-only policy, definition integrity before schema use, schema validation, request/result/deadline bounds, evidence hashes and tenant-scoped persistence. Four investigation slots are configured; load saturation is unverified. Authenticated `/ready` probes enabled connectors; public `/health` is liveness only.
+
+Persistent state is not resumable workflow execution. Full approval lifecycle acceptance H remains unimplemented. Reusable environment draft scripts were previously saved; current publication and fresh-task restoration remain separate unverified operations.

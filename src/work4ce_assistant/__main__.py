@@ -15,6 +15,8 @@ def main() -> None:
     commands.add_parser("version")
     commands.add_parser("doctor")
     commands.add_parser("health")
+    database = commands.add_parser("database")
+    database.add_argument("action", choices=["migrate"])
     serve = commands.add_parser("serve")
     serve.add_argument("--port", type=int, default=8765)
     demo = commands.add_parser("demo")
@@ -27,6 +29,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "version":
         print(__version__)
+        return
+    if args.command == "database":
+        from .storage import migrate
+        try:
+            migrate(os.environ.get("WORK4CE_DB", ".local/work4ce.db"))
+        except Exception:
+            parser.exit(1, "Database migration failed; verify connectivity, permissions and schema. Credentials are not logged.\n")
+        print("Database schema is current.")
         return
     if args.command == "serve":
         import uvicorn
@@ -42,7 +52,7 @@ def main() -> None:
         print("Demo settings valid. Production disabled. Use health for API connectivity.")
         return
     # Fixed local demo API; tokens never forwarded to a user-specified URL.
-    token = os.environ.get("WORK4CE_DEMO_TOKEN", "")
+    token = os.environ.get("WORK4CE_ACCESS_TOKEN", "") if os.environ.get("WORK4CE_AUTH_MODE") == "oidc" else os.environ.get("WORK4CE_DEMO_TOKEN", "")
     headers = {"Authorization": "Bearer " + token} if token else {}
     try:
         with httpx.Client(base_url="http://127.0.0.1:8765", trust_env=False, timeout=30) as client:

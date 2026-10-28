@@ -3,9 +3,11 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 mismatched = []
+count = 0
 for line in (Path(__file__).resolve().parents[1] / 'requirements.lock').read_text().splitlines():
     if not line or line.startswith('#'):
         continue
+    count += 1
     name, expected = line.split('==')
     try:
         if version(name) != expected:
@@ -14,4 +16,4 @@ for line in (Path(__file__).resolve().parents[1] / 'requirements.lock').read_tex
         mismatched.append(name)
 if mismatched:
     raise SystemExit('Pinned dependency installation required: ' + ', '.join(mismatched))
-print('All 31 locked distribution versions match the installed environment.')
+print(f'All {count} locked distribution versions match the installed environment.')

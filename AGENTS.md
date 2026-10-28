@@ -25,7 +25,7 @@ PYTHONPATH=src python -m work4ce_assistant.reference_servers rest --port 8766
 PYTHONPATH=src python -m work4ce_assistant serve
 ```
 
-See `README.md` for token configuration. Production services and credentials are not prerequisites for isolated synthetic tests.
+See `README.md` for token configuration. Production services and credentials are not prerequisites for isolated synthetic tests. `python scripts/test_postgres.py` provisions its own disposable PostgreSQL integration database; never point tests at useful data. SQLite auto-migrates; PostgreSQL requires `python -m work4ce_assistant database migrate` before API startup.
 
 ## Contributions and phase gates
 

@@ -22,4 +22,4 @@ Do not load arbitrary third-party code into the API process or accept client-sel
 
 ## Verification
 
-Run `PYTHONPATH=src python -m unittest discover -s tests -v`. The 31-test baseline covers core authorization/contracts, six real transport tests and one real API/REST/MCP replacement/restart path. Add contract, malformed-output, timeout, poisoning, substitution and tenant-isolation tests for each new adapter. Do not claim live vendor verification from synthetic fixtures.
+Run `PYTHONPATH=src python -m unittest discover -s tests -v`. The integration suite covers core authorization/contracts, six real transport tests and one real API/REST/MCP replacement/restart path. Add contract, malformed-output, timeout, poisoning, substitution and tenant-isolation tests for each new adapter. Do not claim live vendor verification from synthetic fixtures.
