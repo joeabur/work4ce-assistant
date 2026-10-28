@@ -20,9 +20,11 @@ Protect operator tokens, authenticated identity, tenant-scoped reports, capabili
 | Malformed or oversized output | Schema validation, bounded result size and deadlines | Process CPU/memory limits and streaming backpressure require further hardening |
 | Fabricated evidence or conclusions | Preserve raw event, source connector, hashes and evidence references | Hashes detect accidental changes; they do not prove a remote source is truthful |
 | Database tampering or token disclosure | Avoid credential logging; separate runtime secrets from stored reports | Database administrator can rewrite records; secure remote audit and encryption absent |
-| Unsafe response action | Read-only gateway rejects privileged classes | Full approval lifecycle, single-use binding and isolated executor unimplemented |
-| Service failure loses work | Persist reports, state and errors in migrated SQLite/PostgreSQL; restart persistence tested | Automatic resume, idempotency and recovery drills are not established |
+| Unsafe response action | Read-only gateway rejects privileged classes; cancellation fences stale commits | Full approval lifecycle, single-use binding and isolated executor unimplemented |
+| Service failure loses work | Persist reports, workflow checkpoints, budgets and lease/revision fencing; explicit resume supported | No automatic scheduler or general multi-step recovery; backup/restore drills pending |
 | Demo/live data mixing | Synthetic event schema and fixed demo tenant | No live connector is enabled; validate future ingestion paths independently |
+
+Workflow idempotency and checkpoints are scoped by tenant/subject. Completed execution replay requires current source grants and reviewed manifest hash. Saved-report reading is separately tenant-authorized. Queue admission caps nonterminal work at 100 per owner, while terminal/audit retention and request-rate limits remain future work. Leases bound stale ownership; they do not guarantee cancellation of remote I/O or exactly-once reads.
 
 ## Review requirements before production
 

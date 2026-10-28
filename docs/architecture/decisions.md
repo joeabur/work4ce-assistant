@@ -28,11 +28,11 @@ Bound arguments, output size, runtime and execution attempts. Do not automatical
 
 ## ADR-005 — SQLAlchemy, Alembic and development storage
 
-The store now uses SQLAlchemy with bundled Alembic revision `0001_foundation`. SQLite paths/URLs remain the default and auto-migrate. Exact legacy SQLite schemas can be adopted without losing existing rows; unknown schemas are rejected. Back up useful data before upgrades.
+The store now uses SQLAlchemy with bundled Alembic revisions through `0002_workflows`. SQLite paths/URLs remain the default and auto-migrate. Exact legacy SQLite schemas can be adopted without losing existing rows; unknown schemas are rejected. Back up useful data before upgrades.
 
 PostgreSQL uses psycopg, requires an explicit `database migrate` before startup, and is integration-tested against PostgreSQL 17.11 in an isolated digest-pinned container. Pools are bounded to four connections. This replaces the earlier SQLite-only persistence decision.
 
-The implementation remains synchronous and may block the API event loop. TLS, database least privilege/RLS, encrypted storage, backup/restore, retention and tamper-resistant remote audit remain required for enterprise deployment. Persisted state does not establish resumable workflows. See the database tutorial.
+The implementation remains synchronous and may block the API event loop. TLS, database least privilege/RLS, encrypted storage, backup/restore, retention and tamper-resistant remote audit remain required for enterprise deployment. Workflow checkpoint/revision/lease state supports explicit owner-scoped resume; it does not establish an automatic distributed scheduler. See the database tutorial.
 
 ## ADR-006 — Deterministic first investigator
 
@@ -53,3 +53,12 @@ Roles come only from a reviewed server-side subject-role mapping; duplicate keys
 Authenticated API request → deterministic investigator → capability registry/resolver → independent policy → integration gateway → approved REST or MCP connector → schema validation → normalized source-attributed synthetic evidence → stored incident report and audit.
 
 The services are logical components, not a commitment to deploy independent microservices. PostgreSQL and the OIDC adapter are implemented with the evidence above. Workflow workers, a dashboard, model-provider calls and enterprise operations remain separate future work.
+
+
+## ADR-008 — Bounded durable read workflows
+
+Persist workflow ownership, idempotency binding, deadlines, invocation reservations and validated evidence checkpoints in the same configured database as reports. Use revision checks and a 30-second lease to fence concurrent/stale workers. Enforce a 100-nonterminal-workflow admission cap per tenant/subject atomically. Four API slots guard execution and deferred admission.
+
+Checkpoint immediately after validating the read result, before report commit. Reuse saved evidence only after current source connector/manifest/permission authorization. Persist invocation budget before actual connector invocation, including fallback, so crashes cannot reset it. A pre-checkpoint interruption may repeat a read; there is no exactly-once claim and writes remain denied.
+
+Default deadline is 120 seconds from enqueue and default budget is two invocations. Explicit cancellation invalidates commit authority; it cannot guarantee termination of external I/O already in flight. Task interruption releases the lease when possible and preserves recoverable state; after abrupt worker exit, resume waits for lease expiry. Expose manual resume/cancel/state APIs; do not imply an automatic worker or general workflow scheduler exists.

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Header
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,10 +36,16 @@ class Settings:
     auth_mode: str = "demo"
     oidc_config: OIDCConfig | None = None
     oidc_subject_roles: tuple[tuple[str, str], ...] = ()
+    workflow_max_tool_calls: int = 2
+    workflow_duration_seconds: float = 120
 
     def __post_init__(self):
         if self.mode != "demo":
             raise ValueError("Production remains disabled pending deployment, isolation, and operational security controls")
+        if (type(self.workflow_max_tool_calls) is not int or not 1 <= self.workflow_max_tool_calls <= 8
+                or type(self.workflow_duration_seconds) not in (int, float)
+                or not .01 <= self.workflow_duration_seconds <= 600):
+            raise ValueError("Workflow budgets require 1..8 tool calls and .01..600 seconds")
         if self.auth_mode not in {"demo", "oidc"}:
             raise ValueError("WORK4CE_AUTH_MODE must be demo or oidc")
         if self.auth_mode == "demo" and (len(self.demo_token) < 32 or len(self.admin_token) < 32
@@ -88,7 +94,9 @@ class Settings:
                    database=os.environ.get("WORK4CE_DB", ".local/work4ce.db"),
                    rest_url=os.environ.get("WORK4CE_REST_URL", "http://127.0.0.1:8766"),
                    mode=os.environ.get("WORK4CE_MODE", "demo"),
-                   auth_mode=auth_mode, oidc_config=config, oidc_subject_roles=roles)
+                   auth_mode=auth_mode, oidc_config=config, oidc_subject_roles=roles,
+                   workflow_max_tool_calls=int(os.environ.get("WORK4CE_MAX_TOOL_CALLS", "2")),
+                   workflow_duration_seconds=float(os.environ.get("WORK4CE_INVESTIGATION_TIMEOUT_SECONDS", "120")))
 
 
 class BodyLimit:
@@ -126,13 +134,15 @@ class InvestigationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     query: str = Field(min_length=1, max_length=200)
     limit: int = Field(default=20, ge=1, le=100)
+    defer: bool = False
 
 
 def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None) -> FastAPI:
     own_store = gateway is None
     store = gateway.store if gateway else Store(settings.database)
     gateway = gateway or Gateway(store)
-    investigator = Investigator(gateway, store)
+    investigator = Investigator(gateway, store, max_tool_calls=settings.workflow_max_tool_calls,
+                                duration_seconds=settings.workflow_duration_seconds)
     slots = asyncio.Semaphore(4)
     own_verifier = settings.auth_mode == "oidc" and verifier is None
     if own_verifier:
@@ -230,17 +240,44 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
         gateway.disable(ctx, identity)
         return {"connector_id": identity, "enabled": False}
 
-    @app.post("/investigations", status_code=201)
-    async def investigate(body: InvestigationRequest, ctx: Context):
+    async def bounded_run(operation):
         try:
             async with asyncio.timeout(0.1):
                 await slots.acquire()
         except TimeoutError:
             raise Work4ceError("investigation_capacity_exceeded", 429) from None
         try:
-            return await investigator.investigate(ctx, body.query, body.limit)
+            return await operation()
         finally:
             slots.release()
+
+    @app.post("/investigations", status_code=201)
+    async def investigate(body: InvestigationRequest, ctx: Context,
+                          idempotency_key: Annotated[str | None, Header(max_length=128)] = None):
+        if body.defer:
+            async def enqueue():
+                return investigator.enqueue(ctx, body.query, body.limit, idempotency_key=idempotency_key)
+            state = await bounded_run(enqueue)
+            return JSONResponse({"id": state["id"], "status": state["state"]}, status_code=202)
+        return await bounded_run(lambda: investigator.investigate(ctx, body.query, body.limit,
+                                                                  idempotency_key=idempotency_key))
+
+    @app.post("/investigations/{identity}/resume")
+    async def resume(identity: str, ctx: Context):
+        return await bounded_run(lambda: investigator.resume(ctx, identity))
+
+    @app.post("/investigations/{identity}/cancel")
+    async def cancel(identity: str, ctx: Context):
+        return await investigator.cancel(ctx, identity)
+
+    @app.get("/investigations/{identity}/state")
+    async def workflow_state(identity: str, ctx: Context):
+        if "investigations:read" not in ctx.permissions:
+            raise Work4ceError("permission_denied", 403)
+        state = store.get_workflow(ctx.tenant_id, ctx.subject, identity)
+        return {"id": state["id"], "status": state["state"], "checkpointed": state["checkpoint"] is not None,
+                "tool_calls": state["tool_calls"], "max_tool_calls": state["max_tool_calls"],
+                "deadline": state["deadline"]}
 
     @app.get("/investigations/{identity}")
     async def report(identity: str, ctx: Context):

@@ -65,18 +65,25 @@ All operations except `/health` require bearer authentication. `/health` checks 
 |---|---|
 | `POST /investigations` with `{"query":"PowerShell","limit":20}` | Collect synthetic events and store a report |
 | `GET /investigations/{id}` | Retrieve an authorized report |
+| `POST /investigations/{id}/resume` | Manually resume an owner-scoped durable workflow |
+| `POST /investigations/{id}/cancel` | Cancel and fence later completion |
+| `GET /investigations/{id}/state` | Inspect owner-scoped progress and persisted budgets |
 | `GET /capabilities` | Discover registered capabilities |
 | `GET /connectors` | Inspect approved connectors |
 | `POST /connectors/{id}/disable` | Disable a connector with backend-assigned admin authorization |
 | `GET /health` | Check API liveness |
 | `GET /ready` | Probe enabled connectors |
 
+Use `Idempotency-Key` to bind retries to the same tenant/subject request. Add `"defer":true` to queue a request with `202`, then explicitly resume it; no automatic worker is started. See [durable workflows](docs/tutorials/workflows.md) for checkpoints, leases, cancellation and persisted budgets.
+
 Inspect evidence provenance, disable the selected connector as an admin, and repeat the same investigation to observe authorized replacement. Connector failure remains explicit. Disablement persists; no enable/review API exists.
 
 ## Verification and scope
 
-The PostgreSQL-backed runner completed **70 tests in 26.290 seconds with zero skips**, covering both PostgreSQL and SQLite. The suite exercises real REST/MCP transport replacement, report/revocation persistence, database migrations and actual RSA-signed JWT verification against mocked HTTPS JWKS. No live identity provider was verified. Wheel build and isolated installed-wheel migration/report-persistence checks also passed.
+The complete suite passed **120 tests in 39.650 seconds with zero skips** against real PostgreSQL 17.11 and SQLite. The suite exercises real REST/MCP replacement, persisted budgets and cancellation, migration/queue concurrency, and RSA-signed JWT verification against mocked HTTPS JWKS. Two end-to-end tests terminate a real worker after checkpoint commit, restart the API, and verify stable evidence without another REST search on both databases. No live identity provider was verified. The current wheel was rebuilt and isolated installed-wheel migration 0002 and workflow completion passed. All 40 dependency pins and `pip check` passed.
+
+Trusted workflow defaults are configured through `WORK4CE_MAX_TOOL_CALLS` (2; range 1–8) and `WORK4CE_INVESTIGATION_TIMEOUT_SECONDS` (120 seconds; range 0.01–600). Request bodies cannot override these limits.
 
 For isolated PostgreSQL integration testing, run `python scripts/test_postgres.py` with Docker available. The runner creates and removes only its own temporary PostgreSQL container/data. The Compose file provisions a development database, not an application deployment.
 
-The investigator is deterministic; no LLM or AI accuracy claims are made. Production OIDC operations, database TLS/RLS, workflow resume, response approvals, dashboard and live security integrations remain incomplete. See [architecture](docs/architecture/decisions.md), [threat model](docs/security/threat-model.md), and [next steps](docs/next-steps.md).
+The investigator is deterministic; no LLM or AI accuracy claims are made. Production OIDC operations, database TLS/RLS, automatic workflow scheduling, AI planning, response approvals, dashboard and live security integrations remain incomplete. See [specification status](docs/prompt-status.md), [architecture](docs/architecture/decisions.md), [threat model](docs/security/threat-model.md), and [next steps](docs/next-steps.md).

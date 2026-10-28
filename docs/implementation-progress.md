@@ -9,7 +9,7 @@ The synthetic vertical slice and PostgreSQL store are `integration_tested`; the 
 | 2 — Universal integration framework | in_progress | Reviewed contracts, registration, resolver and read-only gateway integration-tested; full CDK/production policy incomplete |
 | 3 — MCP infrastructure | in_progress | Official SDK local stdio transport integration-tested; remote OAuth and broader compatibility pending |
 | 4 — Protocol independence | in_progress | Real API REST/MCP replacement passed; full A–J architecture gate incomplete |
-| 5–7 — Runtime, evidence, demo | in_progress | Deterministic synthetic workflow only; LLM runtime, durable resume and broader scenarios pending |
+| 5–7 — Runtime, evidence, demo | in_progress | Deterministic durable workflow, manual resume, cancellation, checkpoints and persisted invocation budgets implemented; AI planning, human review and cost/token controls pending |
 | 8 — First live integration | blocked | Requires an authorized service and infrastructure; no live vendor verification |
 | 9–14 — SOC, dashboard, advanced features, response, CDK, hardening | planned | Not complete |
 
@@ -17,14 +17,16 @@ Initial discovery found an unborn checkout. Read-only Git checks failed inside t
 
 ## Verification record
 
-`.venv/bin/python scripts/test_postgres.py` completed **70 tests in 26.290 seconds with zero skips** against a real PostgreSQL 17.11 container and SQLite. The run contained 17 verifier, eight OIDC API, 24 core, two real end-to-end, 13 storage/migration and six transport tests.
+`.venv/bin/python scripts/test_postgres.py` completed **120 tests in 39.650 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, eight OIDC API, 24 core, two real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration and four workflow API tests.
 
-OIDC verification has 17 focused tests using actual RSA signatures and mocked HTTPS JWKS. API tests verify signed-token authentication, server-assigned tenant/roles, ignored token-supplied grants, rejected demo fallback and redacted service failures. No live IdP or browser login was verified.
+Migration `0002_workflows` adds owner-scoped idempotency and atomic 100-pending-workflow admission, checkpoint/revision/lease fencing, manual resume/cancel/state APIs and persisted invocation/deadline budgets. Two end-to-end tests terminate a real worker with `os._exit` after checkpoint commit, restart the API and resume after lease expiry on SQLite and PostgreSQL. Evidence remained stable and no second REST search occurred.
 
-Database checks cover versioned migrations, explicit PostgreSQL migration requirements, SQLite legacy adoption/data preservation, reports, audit and connector state. Real API/REST/MCP testing verifies authorized connector replacement without investigator changes, report persistence and revocation across restart.
+Workflow API checks cover queue quota 429, cancellation freeing capacity, foreign-owner 404, unauthenticated 401, filtered state metadata, trusted environment budget settings and rejected request-body limit injection. See `prompt-status.md` for detailed section 10.2/10.3 coverage and gaps.
 
-Setup refreshed the editable installation, verified all 40 locked versions and passed `pip check`. Clean installation of all 40 distributions in an isolated virtual environment also passed `pip check`. Wheel build and installed-wheel migration/report-persistence checks passed with isolated imports outside the source tree, verifying bundled migrations. The generated lock pins Python 3.12/Linux dependencies, build tooling and development verification packages. It has no downloaded-artifact hashes. Current advisories, remote CI, Compose startup and application container deployment and live identity-provider checks are unrun.
+OIDC tests use actual RSA signatures with mocked HTTPS JWKS; no live provider or browser login was verified. Current wheel build and isolated installed-wheel migration 0002/workflow completion passed. Clean installation of all 40 locked distributions, version verification and `pip check` passed. The generated lock has no downloaded-artifact hashes; advisories remain unreviewed.
+
+A native GitHub CI status query returned Forbidden, so remote CI remains unverified. Compose startup and backend production deployment remain unrun; the isolated runner did start and test the pinned database image.
 
 Controls include trusted tenant/connector grants, read-only policy, definition integrity before schema use, schema validation, request/result/deadline bounds, evidence hashes and tenant-scoped persistence. Four investigation slots are configured; load saturation is unverified. Authenticated `/ready` probes enabled connectors; public `/health` is liveness only.
 
-Persistent state is not resumable workflow execution. Full approval lifecycle acceptance H remains unimplemented. Reusable environment draft scripts were previously saved; current publication and fresh-task restoration remain separate unverified operations.
+Manual resume reuses validated durable checkpoints after interruption/restart; automatic scheduling and general multi-step recovery remain incomplete. Full approval lifecycle acceptance H remains unimplemented. Current reusable environment install/start draft instructions were saved with migration 0002 and the 120-test runner. The managed runtime reports healthy/running with enforced networking, but cloud snapshot publication and fresh-task restoration remain unverified. Publication still requires the product UI; no new publication attempt or failure cause has been established.

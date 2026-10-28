@@ -25,7 +25,7 @@ python -m work4ce_assistant database migrate
 python -m work4ce_assistant serve
 ```
 
-The bundled Alembic head is `0001_foundation`. PostgreSQL startup requires the expected schema revision and does not silently initialize an unversioned production database. Database configuration, connection and migration errors are redacted. Engine pools are bounded to four connections. The development service does not establish TLS, least-privilege runtime/migration separation, row-level tenant isolation, encrypted storage or recovery readiness.
+The bundled Alembic head is `0002_workflows`. PostgreSQL startup requires the expected schema revision and does not silently initialize an unversioned production database. Database configuration, connection and migration errors are redacted. Engine pools are bounded to four connections. The development service does not establish TLS, least-privilege runtime/migration separation, row-level tenant isolation, encrypted storage or recovery readiness.
 
 ## Isolated integration suite
 
@@ -37,4 +37,4 @@ python scripts/test_postgres.py
 
 This runner generates an ephemeral database credential, starts its own uniquely named digest-pinned container, runs the full suite against it, and removes only its own container and temporary data on exit. It does not reuse or delete the Compose volume. Tests should never target a database containing useful data.
 
-Persistent reports after API restart are tested. Resuming interrupted investigations, distributed coordination and backup/restore recovery remain incomplete. Synchronous store methods can block the API event loop; worker isolation or an asynchronous persistence design is required before scaling.
+Persistent reports after API restart are tested. Owner-scoped manual resume now reuses validated checkpoints after lease release/expiry. Automatic scheduling, general multi-step recovery and backup/restore drills remain incomplete. Synchronous store methods can block the API event loop; worker isolation or an asynchronous persistence design is required before scaling.

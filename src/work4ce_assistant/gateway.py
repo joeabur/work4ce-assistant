@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .contracts import CapabilityManifest, Connector, ConnectorManifest, ExecutionContext, Work4ceError, digest
 from .storage import Store
@@ -88,8 +88,23 @@ class Gateway:
             raise Work4ceError("connector_not_found", 404)
         self.store.disable(context.tenant_id, context.subject, identity)
 
+    def authorize_checkpoint(self, context: ExecutionContext, resolved: dict[str, Any]) -> None:
+        """Stored evidence cannot restore revoked execution grants or changed definitions."""
+        identity = resolved.get("connector_id")
+        entry = self._entries.get(identity) if isinstance(identity, str) else None
+        if (entry is None or not self._permitted(entry, context)
+                or not self.store.enabled(context.tenant_id, identity)):
+            raise Work4ceError("no_authorized_connector", 403)
+        manifest = entry.manifest
+        if (resolved.get("manifest_hash") != entry.manifest_hash
+                or resolved.get("capability_id") != manifest.capability.capability_id
+                or resolved.get("capability_version") != manifest.capability.version
+                or resolved.get("protocol") != manifest.protocol):
+            raise Work4ceError("checkpoint_definition_changed", 403)
+        manifest.capability.validate_result(resolved.get("data"))
+
     async def execute(self, context: ExecutionContext, capability_id: str, arguments: dict[str, Any],
-                      version: str = "1.0") -> dict[str, Any]:
+                      version: str = "1.0", *, before_invoke: Callable[[], None] | None = None) -> dict[str, Any]:
         if len(self._entries) > 100:
             raise Work4ceError("registry_budget_exceeded", 503)
         eligible = [e for e in self._entries.values()
@@ -121,9 +136,16 @@ class Gateway:
                         # Re-evaluate revocation immediately before entering the adapter.
                         if not self.store.enabled(context.tenant_id, m.connector_id):
                             continue
+                        if before_invoke is not None:
+                            before_invoke()
                         async with asyncio.timeout(cap.timeout_seconds):
                             result = await entry.connector.invoke(capability_id, arguments.copy())
                         cap.validate_result(result)
+                    except Work4ceError as error:
+                        if error.code.startswith("workflow_"):
+                            raise
+                        self.store.audit(context.tenant_id, context.subject, "capability.execute", m.connector_id, "failed")
+                        continue
                     except Exception:
                         self.store.audit(context.tenant_id, context.subject, "capability.execute", m.connector_id, "failed")
                         continue

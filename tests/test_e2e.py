@@ -76,6 +76,70 @@ class VerticalSliceTests(unittest.TestCase):
                 connectors = client.get('/connectors',headers=auth).json()
                 self.assertEqual({x['protocol'] for x in connectors},{'rest','mcp'})
                 self.assertEqual(len(client.get('/capabilities',headers=auth).json()),1)
+                # A queued job survives API shutdown; a separate worker then exits
+                # abruptly after checkpoint commit, before report commit.
+                queued_headers = {**auth, 'Idempotency-Key':'durable-e2e-checkpoint'}
+                queued = client.post('/investigations',json={'query':'PowerShell','defer':True},headers=queued_headers)
+                self.assertEqual(queued.status_code,202,queued.text)
+                workflow_id = queued.json()['id']
+                self.assertEqual(client.get('/investigations/'+workflow_id+'/state',headers=auth).json()['status'],'queued')
+                api.terminate()
+                api.wait(timeout=5)
+                worker_code = """
+import asyncio, os
+from work4ce_assistant.api import TENANT,PERMISSIONS,CONNECTORS
+from work4ce_assistant.connectors import RestConnector
+from work4ce_assistant.contracts import CapabilityManifest,ConnectorManifest,ExecutionContext
+from work4ce_assistant.fixtures import SEARCH_CAPABILITY
+from work4ce_assistant.gateway import Gateway
+from work4ce_assistant.investigation import Investigator
+from work4ce_assistant.storage import Store
+async def run():
+    store=Store(os.environ['WORK4CE_DB'])
+    gateway=Gateway(store)
+    await gateway.register(ConnectorManifest(connector_id='demo-rest',name='demo-rest',protocol='rest',
+        tenant_id=TENANT,synthetic=True,capability=CapabilityManifest(**SEARCH_CAPABILITY)),
+        RestConnector(os.environ['WORK4CE_REST_URL']),reviewed=True)
+    claim=store.claim_workflow
+    store.claim_workflow=lambda *args,**kwargs: claim(*args,lease_seconds=2)
+    store.finish_workflow=lambda *args,**kwargs: os._exit(73)
+    await Investigator(gateway,store).resume(ExecutionContext(TENANT,'demo-analyst',PERMISSIONS,CONNECTORS,True),
+        os.environ['WORK4CE_TEST_WORKFLOW_ID'])
+asyncio.run(run())
+"""
+                child = subprocess.run([sys.executable,'-c',worker_code],
+                    env={**env,'WORK4CE_TEST_WORKFLOW_ID':workflow_id},stdout=log,stderr=log,timeout=15)
+                self.assertEqual(child.returncode,73)
+                from work4ce_assistant.storage import Store
+                state_store = Store(env['WORK4CE_DB'])
+                try:
+                    saved_checkpoint = state_store.get_workflow('synthetic-demo','demo-analyst',workflow_id)['checkpoint']
+                    self.assertIsNotNone(saved_checkpoint)
+                finally:
+                    state_store.close()
+                requests_before_resume = (Path(directory)/'services.log').read_text().count('POST /events/search')
+                api = start_api()
+                wait('/ready',auth)
+                for _ in range(50):
+                    resumed = client.post('/investigations/'+workflow_id+'/resume',headers=auth)
+                    if resumed.status_code == 409 and resumed.json().get('error') == 'workflow_busy':
+                        time.sleep(.1)
+                        continue
+                    break
+                self.assertEqual(resumed.status_code,200,resumed.text)
+                self.assertEqual(resumed.json()['report']['evidence'],saved_checkpoint['evidence'])
+                self.assertEqual((Path(directory)/'services.log').read_text().count('POST /events/search'),requests_before_resume)
+                replay = client.post('/investigations',json={'query':'PowerShell'},headers=queued_headers)
+                self.assertEqual(replay.status_code,201,replay.text)
+                self.assertEqual(replay.json(),resumed.json())
+                conflict = client.post('/investigations',json={'query':'different'},headers=queued_headers)
+                self.assertEqual(conflict.status_code,409)
+                cancel_job = client.post('/investigations',json={'query':'PowerShell','defer':True},
+                    headers={**auth,'Idempotency-Key':'durable-e2e-cancel'})
+                self.assertEqual(cancel_job.status_code,202,cancel_job.text)
+                cancel_id = cancel_job.json()['id']
+                self.assertEqual(client.post('/investigations/'+cancel_id+'/cancel',headers=auth).json()['status'],'cancelled')
+                self.assertEqual(client.post('/investigations/'+cancel_id+'/resume',headers=auth).status_code,409)
                 first = client.post('/investigations',json={'query':'PowerShell'},headers=auth)
                 self.assertEqual(first.status_code,201,first.text)
                 self.assertEqual(first.json()['report']['evidence'][0]['protocol'],'rest')
