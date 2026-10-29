@@ -47,6 +47,20 @@ type Evidence = {
     synthetic: boolean;
   };
 };
+type CaseCoord = {
+  investigation_id: string;
+  creator: string;
+  assignee: string | null;
+  escalation_state: "none" | "requested" | "acknowledged";
+  escalation_reason: string | null;
+  escalated_by: string | null;
+  escalated_at: string | null;
+  acknowledged_by: string | null;
+  acknowledged_at: string | null;
+  revision: number;
+  updated_by: string | null;
+  updated_at: string | null;
+};
 type Report = {
   id: string;
   status: string;
@@ -59,6 +73,7 @@ type Report = {
     reasoning?: { synthetic_fixture: boolean };
   };
   review?: Review;
+  case?: CaseCoord;
 };
 type Proposal = {
   id: string;
@@ -78,15 +93,22 @@ type Source = {
   enabled: boolean;
   synthetic: boolean;
 };
-type View = "investigations" | "reviews" | "responses" | "integrations";
+type View =
+  "investigations" | "coordination" | "reviews" | "responses" | "integrations";
 type Modal =
   | { kind: "new" }
+  | { kind: "case_assign"; coordination: CaseCoord }
+  | { kind: "case_escalate"; coordination: CaseCoord }
+  | { kind: "case_ack"; coordination: CaseCoord }
   | { kind: "review"; review: Review; decision: "approved" | "rejected" }
   | { kind: "proposal"; record: Report }
   | { kind: "decision"; proposal: Proposal; decision: "approved" | "rejected" }
   | { kind: "simulate"; proposal: Proposal }
   | { kind: "revoke"; proposal: Proposal };
 const labels: Record<string, string> = {
+  requested: "Escalation requested",
+  acknowledged: "Acknowledged",
+  none: "Not escalated",
   awaiting_review: "Awaiting review",
   completed: "Completed",
   queued: "Queued",
@@ -104,6 +126,21 @@ const labels: Record<string, string> = {
   needs_analyst_review: "Analyst review needed",
 };
 const messages: Record<string, string> = {
+  case_revision_conflict:
+    "This case changed. Refresh and review its latest state before trying again.",
+  case_assignee_ineligible:
+    "That account is not eligible for assignment. Refresh the assignee list and choose another account.",
+  invalid_case_assignee:
+    "That account is not eligible for assignment. Choose an approved account.",
+  case_escalation_not_requested:
+    "This escalation is no longer awaiting acknowledgement. Refresh the case.",
+  case_escalation_already_requested:
+    "This case is already escalated. Refresh to see the current request.",
+  case_escalation_pending:
+    "This case already has a pending escalation. Refresh to read the current request.",
+  case_not_escalated:
+    "This case has no escalation awaiting acknowledgment. Refresh to read its current state.",
+  case_management_required: "A manager must acknowledge this escalation.",
   authentication_required:
     "Your access token was not accepted. Connect again with a valid token.",
   permission_denied: "Your account does not have permission for this action.",
@@ -241,7 +278,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 function Badge({ value }: { value: string }) {
   return (
     <span
-      className={`badge ${["completed", "approved", "consumed"].includes(value) ? "positive" : ["pending", "awaiting_review", "queued", "running"].includes(value) ? "attention" : ["failed", "rejected", "review_rejected", "revoked"].includes(value) ? "negative" : "neutral"}`}
+      className={`badge ${["completed", "approved", "consumed", "acknowledged"].includes(value) ? "positive" : ["pending", "awaiting_review", "queued", "running", "requested"].includes(value) ? "attention" : ["failed", "rejected", "review_rejected", "revoked"].includes(value) ? "negative" : "neutral"}`}
     >
       <span />
       {labels[value] || value.replaceAll("_", " ")}
@@ -357,6 +394,8 @@ export default function Page() {
     [nextCursor, setNextCursor] = useState<string | null>(null),
     [historyLoading, setHistoryLoading] = useState(false),
     [historyLoaded, setHistoryLoaded] = useState(false),
+    [coordinationRows, setCoordinationRows] = useState<CaseCoord[]>([]),
+    [assignees, setAssignees] = useState<{ subject: string }[]>([]),
     [reviews, setReviews] = useState<Review[]>([]),
     [responses, setResponses] = useState<Proposal[]>([]),
     [sources, setSources] = useState<Source[]>([]),
@@ -397,6 +436,8 @@ export default function Page() {
     setNextCursor(null);
     setHistoryLoading(false);
     setHistoryLoaded(false);
+    setCoordinationRows([]);
+    setAssignees([]);
     setReviews([]);
     setResponses([]);
     setSources([]);
@@ -483,7 +524,15 @@ export default function Page() {
       setHistoryLoading(false);
       setLoading(true);
       try {
-        const [items, proposals, connectors, queue, ready] = await Promise.all([
+        const [
+          items,
+          proposals,
+          connectors,
+          queue,
+          ready,
+          coordinated,
+          candidates,
+        ] = await Promise.all([
           request<CasePage>("/investigations/history?limit=50"),
           identity.permissions.includes("responses:read")
             ? request<Proposal[]>("/responses")
@@ -497,6 +546,12 @@ export default function Page() {
               return { connectors: [] };
             throw cause;
           }),
+          identity.permissions.includes("cases:read")
+            ? request<CaseCoord[]>("/cases")
+            : Promise.resolve([]),
+          identity.permissions.includes("cases:coordinate")
+            ? request<{ subject: string }[]>("/case-assignees")
+            : Promise.resolve([]),
         ]);
         if (generation !== epoch.current || version !== historyVersion.current)
           return;
@@ -507,6 +562,8 @@ export default function Page() {
         setSources(connectors);
         setReviews(queue);
         setHealthy(ready.connectors);
+        setCoordinationRows(coordinated);
+        setAssignees(candidates);
       } catch (cause) {
         if (generation === epoch.current && version === historyVersion.current)
           fail(cause);
@@ -557,9 +614,20 @@ export default function Page() {
       setSelected(null);
       setDetailLoading(true);
       try {
-        const item = await request<Report>(
-          `/investigations/${encodeURIComponent(id)}`,
-        );
+        const [item, coordination] = await Promise.all([
+          request<Report>(`/investigations/${encodeURIComponent(id)}`),
+          request<CaseCoord>(
+            `/investigations/${encodeURIComponent(id)}/case`,
+          ).catch((cause) => {
+            if (
+              cause instanceof RequestError &&
+              [403, 404].includes(cause.status)
+            )
+              return undefined;
+            throw cause;
+          }),
+        ]);
+        item.case = coordination;
         if (generation === epoch.current && sequence === selection.current)
           setSelected(
             item.report
@@ -661,7 +729,17 @@ export default function Page() {
       await refresh(me);
       if (caseID && selectedID.current === caseID) await openCase(caseID);
     } catch (cause) {
-      if (generation === epoch.current) fail(cause);
+      if (generation === epoch.current) {
+        if (
+          cause instanceof RequestError &&
+          cause.code === "case_revision_conflict"
+        ) {
+          setModal(null);
+          await refresh(me);
+          if (caseID && selectedID.current === caseID) await openCase(caseID);
+        }
+        if (generation === epoch.current) fail(cause);
+      }
     } finally {
       if (generation === epoch.current) setBusy(false);
     }
@@ -703,6 +781,53 @@ export default function Page() {
       }
       return;
     }
+    if (current.kind === "case_assign")
+      return act(
+        () =>
+          request(
+            `/investigations/${encodeURIComponent(current.coordination.investigation_id)}/case/assignment`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.coordination.revision,
+                assignee: String(data.get("assignee") || "") || null,
+              }),
+            },
+          ),
+        "Case assignment saved.",
+        current.coordination.investigation_id,
+      );
+    if (current.kind === "case_escalate")
+      return act(
+        () =>
+          request(
+            `/investigations/${encodeURIComponent(current.coordination.investigation_id)}/case/escalation`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.coordination.revision,
+                reason: String(data.get("reason") || "").trim(),
+              }),
+            },
+          ),
+        "Case escalation requested.",
+        current.coordination.investigation_id,
+      );
+    if (current.kind === "case_ack")
+      return act(
+        () =>
+          request(
+            `/investigations/${encodeURIComponent(current.coordination.investigation_id)}/case/acknowledge`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.coordination.revision,
+              }),
+            },
+          ),
+        "Escalation acknowledged.",
+        current.coordination.investigation_id,
+      );
     if (current.kind === "review")
       return act(
         () =>
@@ -798,6 +923,10 @@ export default function Page() {
       "Investigations",
       "From a question to source-attributed evidence.",
     ],
+    coordination: [
+      "Case coordination",
+      "Coordinate assignments and escalate cases for management attention.",
+    ],
     reviews: [
       "Review queue",
       "Independent decisions, grounded in the evidence.",
@@ -831,6 +960,15 @@ export default function Page() {
       own =
         cases.find((c) => c.id === selected.id)?.subject === me?.subject ||
         review?.requester === me?.subject,
+      coordination = selected.case,
+      canCoordinate = Boolean(
+        coordination &&
+        (has("cases:manage") ||
+          (has("cases:coordinate") &&
+            [coordination.creator, coordination.assignee].includes(
+              me?.subject || "",
+            ))),
+      ),
       canReview =
         has("investigations:review") &&
         review?.requester !== me?.subject &&
@@ -857,6 +995,85 @@ export default function Page() {
           <Badge value={selected.status} />
           <span className="synthetic-mini">Synthetic telemetry</span>
         </div>
+        {coordination && (
+          <section
+            className="coordination-detail"
+            aria-label="Case coordination details"
+          >
+            <div className="coordination-heading">
+              <h3>Case coordination</h3>
+              <Badge value={coordination.escalation_state} />
+            </div>
+            <dl className="coordination-facts">
+              <div>
+                <dt>Assignee</dt>
+                <dd>{coordination.assignee || "Unassigned"}</dd>
+              </div>
+              <div>
+                <dt>Created by</dt>
+                <dd>{coordination.creator}</dd>
+              </div>
+            </dl>
+            {coordination.escalation_reason && (
+              <div className="coordination-escalation">
+                <strong>Escalation reason</strong>
+                <p>{coordination.escalation_reason}</p>
+                <span>
+                  Requested by {coordination.escalated_by || "—"} ·{" "}
+                  {date(coordination.escalated_at || undefined)}
+                </span>
+                {coordination.escalation_state === "acknowledged" && (
+                  <span>
+                    Acknowledged by {coordination.acknowledged_by || "—"} ·{" "}
+                    {date(coordination.acknowledged_at || undefined)}
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="button-row coordination-actions">
+              {canCoordinate && (
+                <button
+                  className="button secondary small"
+                  disabled={busy}
+                  onClick={() =>
+                    setModal({ kind: "case_assign", coordination })
+                  }
+                >
+                  {coordination.assignee ? "Change assignee" : "Assign case"}
+                </button>
+              )}
+              {canCoordinate && (
+                <button
+                  className="button secondary small"
+                  disabled={
+                    busy || coordination.escalation_state === "requested"
+                  }
+                  onClick={() =>
+                    setModal({ kind: "case_escalate", coordination })
+                  }
+                >
+                  {coordination.escalation_state === "acknowledged"
+                    ? "Re-escalate case"
+                    : "Escalate case"}
+                </button>
+              )}
+              {has("cases:manage") &&
+                coordination.escalation_state === "requested" && (
+                  <button
+                    className="button primary small"
+                    disabled={busy}
+                    onClick={() => setModal({ kind: "case_ack", coordination })}
+                  >
+                    Acknowledge escalation
+                  </button>
+                )}
+            </div>
+            <p className="coordination-boundary">
+              Assignment coordinates this case. Collection, review and response
+              permissions remain independently enforced.
+            </p>
+          </section>
+        )}
         {!report ? (
           <Empty
             icon="clock"
@@ -1180,6 +1397,12 @@ export default function Page() {
           {(
             [
               ["investigations", "cases", "Investigations", cases.length],
+              [
+                "coordination",
+                "cases",
+                "Case coordination",
+                coordinationRows.length,
+              ],
               ["reviews", "review", "Review queue", pending.length],
               [
                 "responses",
@@ -1191,7 +1414,9 @@ export default function Page() {
             ] as const
           )
             .filter(
-              (item) => item[0] !== "reviews" || has("investigations:review"),
+              (item) =>
+                (item[0] !== "reviews" || has("investigations:review")) &&
+                (item[0] !== "coordination" || has("cases:read")),
             )
             .map(([id, icon, label, count]) => (
               <button
@@ -1463,6 +1688,72 @@ export default function Page() {
                 )}
               </div>
             </>
+          )}
+          {view === "coordination" && (
+            <div
+              className={`case-layout ${selected || detailLoading ? "has-detail" : ""}`}
+            >
+              <section className="panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Coordinated cases</h2>
+                    <p>Assigned and escalated investigations in your scope</p>
+                  </div>
+                  <span className="pill">
+                    {coordinationRows.length} visible
+                  </span>
+                </div>
+                {loading && !coordinationRows.length ? (
+                  <Loading text="Loading case coordination…" />
+                ) : coordinationRows.length ? (
+                  <div className="case-rows">
+                    {coordinationRows.map((item) => (
+                      <button
+                        data-testid={`coordination-row-${item.investigation_id}`}
+                        key={item.investigation_id}
+                        className={`case-row coordination-row ${selectedID.current === item.investigation_id ? "selected" : ""}`}
+                        onClick={() => void openCase(item.investigation_id)}
+                      >
+                        <span className="case-symbol">
+                          <Icon name="cases" size={19} />
+                        </span>
+                        <span className="case-row-content">
+                          <span className="case-row-title">
+                            Case {short(item.investigation_id)}
+                            <Badge value={item.escalation_state} />
+                          </span>
+                          <span className="case-row-sub">
+                            {item.assignee
+                              ? `Assigned to ${item.assignee}`
+                              : "Unassigned"}
+                            <span>·</span>Created by {item.creator}
+                          </span>
+                          {item.escalation_reason && (
+                            <span className="coordination-row-reason">
+                              {item.escalation_reason}
+                            </span>
+                          )}
+                        </span>
+                        <Icon name="arrow" size={16} />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty
+                    icon="cases"
+                    title="No coordinated cases yet"
+                    text="Open an investigation to assign responsibility or request an escalation. Existing assignments and escalations will appear here."
+                  />
+                )}
+              </section>
+              {detailLoading ? (
+                <section className="panel">
+                  <Loading text="Opening case…" />
+                </section>
+              ) : (
+                selected && detail()
+              )}
+            </div>
           )}
           {view === "reviews" && (
             <div
@@ -1750,23 +2041,101 @@ export default function Page() {
       {modal && (
         <Dialog
           title={
-            modal.kind === "new"
-              ? "Start an investigation"
-              : modal.kind === "review"
-                ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
-                : modal.kind === "proposal"
-                  ? "Propose a synthetic dry run"
-                  : modal.kind === "decision"
-                    ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
-                    : modal.kind === "simulate"
-                      ? "Record this simulation?"
-                      : "Revoke this request?"
+            modal.kind === "case_assign"
+              ? "Assign case"
+              : modal.kind === "case_escalate"
+                ? "Escalate case"
+                : modal.kind === "case_ack"
+                  ? "Acknowledge escalation"
+                  : modal.kind === "new"
+                    ? "Start an investigation"
+                    : modal.kind === "review"
+                      ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
+                      : modal.kind === "proposal"
+                        ? "Propose a synthetic dry run"
+                        : modal.kind === "decision"
+                          ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
+                          : modal.kind === "simulate"
+                            ? "Record this simulation?"
+                            : "Revoke this request?"
           }
           busy={busy}
           close={closeModal}
         >
           <form onSubmit={submit}>
-            {modal.kind === "new" ? (
+            {modal.kind === "case_assign" ? (
+              <>
+                <p className="modal-copy">
+                  Choose an approved analyst for case{" "}
+                  {short(modal.coordination.investigation_id)}. This changes
+                  coordination only; investigation and response authority stay
+                  with their original policy.
+                </p>
+                <label htmlFor="case-assignee">Case assignee</label>
+                <select
+                  id="case-assignee"
+                  name="assignee"
+                  defaultValue={modal.coordination.assignee || ""}
+                  autoFocus
+                >
+                  <option value="">Unassigned</option>
+                  {modal.coordination.assignee &&
+                    !assignees.some(
+                      (item) => item.subject === modal.coordination.assignee,
+                    ) && (
+                      <option value={modal.coordination.assignee}>
+                        {modal.coordination.assignee} (current; no longer
+                        eligible)
+                      </option>
+                    )}
+                  {assignees.map((item) => (
+                    <option key={item.subject} value={item.subject}>
+                      {item.subject}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : modal.kind === "case_escalate" ? (
+              <>
+                <p className="modal-copy">
+                  Request management attention for case{" "}
+                  {short(modal.coordination.investigation_id)}. Explain the
+                  evidence or coordination need.
+                </p>
+                <label htmlFor="escalation-reason">Escalation reason</label>
+                <textarea
+                  id="escalation-reason"
+                  name="reason"
+                  rows={4}
+                  minLength={1}
+                  maxLength={1000}
+                  required
+                  autoFocus
+                  placeholder="Describe why this case needs escalation…"
+                />
+              </>
+            ) : modal.kind === "case_ack" ? (
+              <>
+                <p className="modal-copy">
+                  Acknowledge the current escalation for case{" "}
+                  {short(modal.coordination.investigation_id)}. This records
+                  management review; it does not approve a response action.
+                </p>
+                <div className="confirmation-target">
+                  <Icon name="review" size={25} />
+                  <div>
+                    <strong>Escalation requested</strong>
+                    <span>
+                      {modal.coordination.escalated_by ||
+                        modal.coordination.creator}
+                    </span>
+                  </div>
+                </div>
+                <p className="coordination-note">
+                  {modal.coordination.escalation_reason}
+                </p>
+              </>
+            ) : modal.kind === "new" ? (
               <>
                 <p className="modal-copy">
                   Search the synthetic event sources. Your report will preserve
@@ -1886,17 +2255,23 @@ export default function Page() {
               >
                 {busy
                   ? "Working…"
-                  : modal.kind === "new"
-                    ? "Investigate"
-                    : modal.kind === "proposal"
-                      ? "Request approval"
-                      : modal.kind === "simulate"
-                        ? "Record dry run"
-                        : modal.kind === "revoke"
-                          ? "Revoke request"
-                          : modal.decision === "approved"
-                            ? "Approve"
-                            : "Reject"}
+                  : modal.kind === "case_assign"
+                    ? "Save assignment"
+                    : modal.kind === "case_escalate"
+                      ? "Request escalation"
+                      : modal.kind === "case_ack"
+                        ? "Acknowledge"
+                        : modal.kind === "new"
+                          ? "Investigate"
+                          : modal.kind === "proposal"
+                            ? "Request approval"
+                            : modal.kind === "simulate"
+                              ? "Record dry run"
+                              : modal.kind === "revoke"
+                                ? "Revoke request"
+                                : modal.decision === "approved"
+                                  ? "Approve"
+                                  : "Reject"}
               </button>
             </div>
           </form>

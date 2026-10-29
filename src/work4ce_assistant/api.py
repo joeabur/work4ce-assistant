@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import OIDCConfig, OIDCVerifier
+from .cases import CaseService
 from .connectors import McpConnector, RestConnector
 from .contracts import CapabilityManifest, ConnectorManifest, ExecutionContext, Work4ceError
 from .fixtures import SEARCH_CAPABILITY
@@ -29,10 +30,11 @@ from .storage import Store
 TENANT = "synthetic-demo"
 CONNECTORS = frozenset({"demo-rest", "demo-mcp"})
 PERMISSIONS = frozenset({"events:read", "investigations:run", "investigations:read",
-                         "responses:read", "responses:propose", "responses:simulate"})
-ADMIN_PERMISSIONS = frozenset({"connectors:admin", "investigations:review", "responses:approve"})
+                         "responses:read", "responses:propose", "responses:simulate",
+                         "cases:read", "cases:coordinate"})
+ADMIN_PERMISSIONS = frozenset({"connectors:admin", "investigations:review", "responses:approve", "cases:manage"})
 REVIEWER_PERMISSIONS = frozenset({"events:read", "investigations:read", "investigations:review",
-                                "responses:read", "responses:approve"})
+                                "responses:read", "responses:approve", "cases:read"})
 
 
 @dataclass(frozen=True)
@@ -230,6 +232,19 @@ class ApprovalUse(BaseModel):
     approval_id: UUID = Field(strict=False)
 
 
+class CaseRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    expected_revision: int = Field(ge=0,le=2_147_483_646)
+
+
+class CaseAssignment(CaseRevision):
+    assignee: str | None = Field(min_length=1,max_length=256)
+
+
+class CaseEscalation(CaseRevision):
+    reason: str = Field(min_length=1,max_length=1000)
+
+
 def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None, reasoner: Reasoner | None = None) -> FastAPI:
     own_store = gateway is None
     store = gateway.store if gateway else Store(settings.database)
@@ -251,6 +266,9 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
             store.close()
         raise
     reviews = ReviewService(store,gateway)
+    assignees = (frozenset({'demo-analyst','demo-admin'}) if settings.auth_mode=='demo' else
+                 frozenset(subject for subject,role in settings.oidc_subject_roles if role in {'analyst','admin'}))
+    cases = CaseService(store,TENANT,assignees)
     slots = asyncio.Semaphore(4)
     own_verifier = settings.auth_mode == "oidc" and verifier is None
     if own_verifier:
@@ -348,6 +366,30 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     @app.get("/health")
     async def health():
         return {"status": "ok", "mode": "demo", "synthetic": True}
+
+    @app.get("/case-assignees")
+    async def case_assignees(ctx: Context):
+        return cases.directory(ctx)
+
+    @app.get("/cases")
+    async def case_queue(ctx: Context,limit: int=Query(default=50,ge=1,le=100)):
+        return cases.list(ctx,limit=limit)
+
+    @app.get("/investigations/{identity}/case")
+    async def case_state(identity: UUID,ctx: Context):
+        return cases.get(ctx,str(identity))
+
+    @app.post("/investigations/{identity}/case/assignment")
+    async def case_assignment(identity: UUID,body: CaseAssignment,ctx: Context):
+        return cases.assign(ctx,str(identity),body.expected_revision,body.assignee)
+
+    @app.post("/investigations/{identity}/case/escalation")
+    async def case_escalation(identity: UUID,body: CaseEscalation,ctx: Context):
+        return cases.escalate(ctx,str(identity),body.expected_revision,body.reason)
+
+    @app.post("/investigations/{identity}/case/acknowledge")
+    async def case_acknowledgment(identity: UUID,body: CaseRevision,ctx: Context):
+        return cases.acknowledge(ctx,str(identity),body.expected_revision)
 
     @app.get("/ready")
     async def ready(ctx: Context):

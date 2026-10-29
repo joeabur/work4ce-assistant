@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 from .contracts import Work4ceError, canonical, digest
 from .pagination import decode_history_cursor, encode_history_cursor
 
-HEAD = "0004_reviews"
+HEAD = "0005_cases"
 metadata = MetaData()
 investigations = Table("investigations", metadata,
     Column("id", Text, primary_key=True), Column("tenant", Text, nullable=False),
@@ -81,6 +81,11 @@ response_approvals = Table("response_approvals", metadata,
     Column("request_hash", Text, nullable=False), Column("state", Text, nullable=False),
     Column("expires_at", Float, nullable=False), Column("approver", Text), Column("approval_id", Text),
     Column("decision_comment", Text), Column("simulation_result", Text), Column("simulation_result_hash", Text))
+case_coordination = Table("case_coordination",metadata,
+    Column("investigation_id",Text,ForeignKey("investigations.id"),primary_key=True),Column("tenant",Text,primary_key=True),
+    Column("assignee",Text),Column("escalation_state",Text,nullable=False),Column("escalation_reason",Text),
+    Column("escalated_by",Text),Column("escalated_at",Text),Column("acknowledged_by",Text),Column("acknowledged_at",Text),
+    Column("revision",Integer,nullable=False),Column("updated_by",Text,nullable=False),Column("updated_at",Text,nullable=False))
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -1062,6 +1067,158 @@ class Store:
                 raise Work4ceError("approval_reused",409)
             self._audit(connection,tenant,requester,"response.simulate",identity,"consumed")
             return self._response(connection,tenant,identity)
+
+    @staticmethod
+    def _case_subject(value: Any) -> bool:
+        return isinstance(value,str) and 1 <= len(value) <= 256 and bool(value.strip())
+
+    @staticmethod
+    def _case_timestamp(value: Any) -> bool:
+        if not isinstance(value,str) or not 1 <= len(value) <= 64:
+            return False
+        try:
+            return datetime.fromisoformat(value.replace('Z','+00:00')).tzinfo is not None
+        except ValueError:
+            return False
+
+    @classmethod
+    def _case_data(cls, creator: str, row=None, *, identity: str | None = None) -> dict[str, Any]:
+        if row is None:
+            return {"investigation_id":identity,"creator":creator,"assignee":None,"escalation_state":"none",
+                "escalation_reason":None,"escalated_by":None,"escalated_at":None,"acknowledged_by":None,
+                "acknowledged_at":None,"revision":0,"updated_by":None,"updated_at":None}
+        data = dict(row._mapping) if hasattr(row,'_mapping') else dict(row)
+        data.pop("tenant",None)
+        data["creator"] = creator
+        try:
+            state = data["escalation_state"]
+            if (type(data["revision"]) is not int or not 1 <= data["revision"] <= 2147483647
+                    or data["assignee"] is not None and not cls._case_subject(data["assignee"])
+                    or not cls._case_subject(data["updated_by"]) or not cls._case_timestamp(data["updated_at"])
+                    or state not in {"none","requested","acknowledged"}):
+                raise ValueError("invalid coordination metadata")
+            reason,actor,instant = data["escalation_reason"],data["escalated_by"],data["escalated_at"]
+            ack,ack_at = data["acknowledged_by"],data["acknowledged_at"]
+            if state == "none":
+                if any(value is not None for value in (reason,actor,instant,ack,ack_at)):
+                    raise ValueError("unexpected escalation metadata")
+            else:
+                if (not isinstance(reason,str) or not 1 <= len(reason) <= 1000 or reason != reason.strip()
+                        or not cls._case_subject(actor) or not cls._case_timestamp(instant)):
+                    raise ValueError("incomplete escalation metadata")
+                if state == "requested" and (ack is not None or ack_at is not None):
+                    raise ValueError("unexpected acknowledgement")
+                if state == "acknowledged" and (not cls._case_subject(ack) or not cls._case_timestamp(ack_at)):
+                    raise ValueError("incomplete acknowledgement")
+        except (ValueError,TypeError,KeyError):
+            raise Work4ceError("case_integrity_failure",500) from None
+        return {key:data[key] for key in ("investigation_id","creator","assignee","escalation_state",
+            "escalation_reason","escalated_by","escalated_at","acknowledged_by","acknowledged_at",
+            "revision","updated_by","updated_at")}
+
+    def _case(self, connection: Connection, tenant: str, subject: str, identity: str,
+              *, all_cases: bool = False, lock: bool = False) -> tuple[dict[str, Any],bool]:
+        if lock and connection.dialect.name == "sqlite":
+            # Acquire SQLite's writer before reading authorization or revision.
+            # This no-op leaves investigation metadata and report bytes unchanged.
+            connection.execute(update(investigations).where(investigations.c.tenant == tenant,
+                investigations.c.id == identity).values(updated_at=investigations.c.updated_at))
+        parent_query = select(investigations.c.subject).where(investigations.c.tenant == tenant,
+            investigations.c.id == identity)
+        if lock:
+            parent_query = parent_query.with_for_update()
+        creator = connection.execute(parent_query).scalar_one_or_none()
+        if creator is None:
+            raise Work4ceError("case_not_found",404)
+        statement = select(case_coordination).where(case_coordination.c.tenant == tenant,
+            case_coordination.c.investigation_id == identity)
+        if lock:
+            statement = statement.with_for_update()
+        row = connection.execute(statement).first()
+        # Do not decode private coordination fields before visibility is known.
+        assignee = row.assignee if row is not None else None
+        if not all_cases and subject != creator and subject != assignee:
+            raise Work4ceError("case_not_found",404)
+        return self._case_data(creator,row,identity=identity),row is not None
+
+    def get_case(self, tenant: str, subject: str, identity: str, *, all_cases: bool = False) -> dict[str, Any]:
+        if type(all_cases) is not bool:
+            raise Work4ceError("invalid_case_update",422)
+        with self._connection() as connection:
+            return self._case(connection,tenant,subject,identity,all_cases=all_cases)[0]
+
+    def list_cases(self, tenant: str, subject: str, *, all_cases: bool = False,
+                   limit: int = 50) -> list[dict[str, Any]]:
+        if type(all_cases) is not bool or type(limit) is not int or not 1 <= limit <= 100:
+            raise Work4ceError("invalid_case_update",422)
+        joined = case_coordination.join(investigations,and_(case_coordination.c.investigation_id == investigations.c.id,
+            case_coordination.c.tenant == investigations.c.tenant))
+        statement = select(case_coordination,investigations.c.subject.label("creator")).select_from(joined).where(
+            case_coordination.c.tenant == tenant)
+        if not all_cases:
+            statement = statement.where(or_(investigations.c.subject == subject,case_coordination.c.assignee == subject))
+        with self._connection() as connection:
+            rows = connection.execute(statement.order_by(case_coordination.c.updated_at.desc(),
+                case_coordination.c.investigation_id.desc()).limit(limit)).all()
+        return [self._case_data(row.creator,row) for row in rows]
+
+    def mutate_case(self, tenant: str, subject: str, identity: str, expected_revision: int, operation: str,
+                    *, assignee: str | None = None, reason: str | None = None, manage: bool = False) -> dict[str, Any]:
+        if (not isinstance(tenant,str) or not 1 <= len(tenant) <= 200 or not self._case_subject(subject)
+                or not isinstance(identity,str) or not 1 <= len(identity) <= 200
+                or type(expected_revision) is not int or not 0 <= expected_revision <= 2147483646
+                or not isinstance(operation,str) or operation not in {"assign","escalate","acknowledge"}
+                or type(manage) is not bool):
+            raise Work4ceError("invalid_case_update",422)
+        if operation == "assign":
+            if reason is not None or assignee is not None and not self._case_subject(assignee):
+                raise Work4ceError("invalid_case_update",422)
+        elif operation == "escalate":
+            if (assignee is not None or not isinstance(reason,str) or len(reason)>1000
+                    or not reason.strip()):
+                raise Work4ceError("invalid_case_update",422)
+            reason = reason.strip()
+        elif assignee is not None or reason is not None:
+            raise Work4ceError("invalid_case_update",422)
+        with self._connection(write=True) as connection:
+            current,persisted = self._case(connection,tenant,subject,identity,all_cases=manage,lock=True)
+            if current["revision"] != expected_revision:
+                raise Work4ceError("case_revision_conflict",409)
+            values = {key:current[key] for key in ("assignee","escalation_state","escalation_reason","escalated_by",
+                "escalated_at","acknowledged_by","acknowledged_at")}
+            instant = now()
+            if operation == "assign":
+                values["assignee"] = assignee
+            elif operation == "escalate":
+                if current["escalation_state"] == "requested":
+                    raise Work4ceError("case_escalation_pending",409)
+                values.update(escalation_state="requested",escalation_reason=reason,escalated_by=subject,
+                    escalated_at=instant,acknowledged_by=None,acknowledged_at=None)
+            else:
+                if not manage:
+                    raise Work4ceError("case_management_required",403)
+                if current["escalation_state"] != "requested":
+                    raise Work4ceError("case_not_escalated",409)
+                values.update(escalation_state="acknowledged",acknowledged_by=subject,acknowledged_at=instant)
+            values.update(revision=expected_revision+1,updated_by=subject,updated_at=instant)
+            # Validate the full prospective state before any durable mutation.
+            prospective = self._case_data(current["creator"],{"investigation_id":identity,**values})
+            if persisted:
+                changed = connection.execute(update(case_coordination).where(case_coordination.c.tenant == tenant,
+                    case_coordination.c.investigation_id == identity,case_coordination.c.revision == expected_revision).values(**values))
+                if changed.rowcount != 1:
+                    raise Work4ceError("case_revision_conflict",409)
+            else:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                insert = sqlite_insert if self.engine.dialect.name == "sqlite" else pg_insert
+                created = connection.execute(insert(case_coordination).values(tenant=tenant,investigation_id=identity,
+                    **values).on_conflict_do_nothing(index_elements=["investigation_id","tenant"]).returning(
+                        case_coordination.c.investigation_id)).scalar_one_or_none()
+                if created is None:
+                    raise Work4ceError("case_revision_conflict",409)
+            self._audit(connection,tenant,subject,"case."+operation,identity,"revision:"+str(expected_revision+1))
+            return prospective
 
     def close(self) -> None:
         with self._lock:

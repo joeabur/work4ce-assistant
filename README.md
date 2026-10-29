@@ -60,7 +60,7 @@ The CLI uses `WORK4CE_DEMO_TOKEN` in demo authentication mode and `WORK4CE_ACCES
 
 ## Analyst workbench
 
-The API serves a built Next.js/React/TypeScript dashboard at `/workbench/`. It uses real backend APIs for investigation creation, paginated case history and loaded-case search/filtering, evidence citations, human report decisions, separately approved synthetic dry runs, and connector status. See [the workbench guide](docs/tutorials/workbench.md).
+The API serves a built Next.js/React/TypeScript dashboard at `/workbench/`. It uses real backend APIs for investigation creation, paginated case history and loaded-case search/filtering, evidence citations, human report decisions, case assignment/escalation, separately approved synthetic dry runs, and connector status. See [the workbench guide](docs/tutorials/workbench.md).
 
 Use an existing configured analyst or reviewer access token. It stays in browser memory and clears on reload/sign-out. OIDC redirect login is not implemented. Use **Load older investigations** to extend the initial 50 cases. Refresh loads the latest page again. Search, status filters and counts cover loaded history; they are not global SOC analytics. All evidence is synthetic; simulations always record `performed:false`.
 
@@ -70,7 +70,7 @@ python scripts/build_dashboard.py
 python scripts/test_workbench_browser.py
 ```
 
-Browser checks require Chromium/Chrome, or `WORK4CE_BROWSER_EXECUTABLE` pointing to a compatible executable. Four real-browser checks passed, covering analyst/reviewer approval flow, session clearing, literal untrusted markup, mobile layout and paginated history with delayed-response refresh protection. The production static build and typecheck passed; npm's production-dependency audit reported zero known vulnerabilities at verification time. This does not establish comprehensive security or accessibility certification.
+Browser checks require Chromium/Chrome, or `WORK4CE_BROWSER_EXECUTABLE` pointing to a compatible executable. Five real-browser checks passed, covering analyst/reviewer approval flow, session clearing, literal untrusted markup, mobile layout paginated history with delayed-response refresh protection, and assignment/escalation with stale-edit rejection. The production static build and typecheck passed; npm's production-dependency audit reported zero known vulnerabilities at verification time. This does not establish comprehensive security or accessibility certification.
 
 ## API workflow
 
@@ -89,6 +89,12 @@ Data and control operations require bearer authentication. The static workbench 
 | `GET /capabilities` | Discover registered capabilities |
 | `GET /connectors` | Inspect approved connectors |
 | `POST /connectors/{id}/disable` | Disable a connector with backend-assigned admin authorization |
+| `GET /cases` | List coordinated cases visible to the current actor |
+| `GET /case-assignees` | Read eligible server-configured assignees |
+| `GET /investigations/{id}/case` | Read assignment and escalation metadata |
+| `POST /investigations/{id}/case/assignment` | Assign or unassign with an expected revision |
+| `POST /investigations/{id}/case/escalation` | Request management attention with a reason |
+| `POST /investigations/{id}/case/acknowledge` | Manager acknowledgment of a pending escalation |
 | `GET /health` | Check API liveness |
 | `GET /ready` | Probe enabled connectors |
 
@@ -98,7 +104,7 @@ Inspect evidence provenance, disable the selected connector as an admin, and rep
 
 ## Verification and scope
 
-The complete suite passed **257 tests in 91.863 seconds with zero skips** against real PostgreSQL 17.11 and SQLite. The suite exercises real REST/MCP replacement, persisted budgets and cancellation, migration/queue concurrency, and RSA-signed JWT verification against mocked HTTPS JWKS. Four end-to-end tests terminate a real worker after checkpoint commit, restart the API, and verify stable evidence without another REST search on both databases. No live identity provider was verified. The current wheel serves dashboard HTML and seven JavaScript assets with CSP; authenticated identity and migration 0004 passed from an isolated installed wheel. Human review/dry-run installed-wheel validation passed in the preceding increment. All 42 dependency pins and `pip check` passed.
+The complete suite passed **290 tests in 90.610 seconds with zero skips** against real PostgreSQL 17.11 and SQLite. The suite exercises real REST/MCP replacement, persisted budgets and cancellation, migration/queue concurrency, and RSA-signed JWT verification against mocked HTTPS JWKS. Four end-to-end tests terminate a real worker after checkpoint commit, restart the API, and verify stable evidence without another REST search on both databases. No live identity provider was verified. The current wheel serves dashboard HTML and seven JavaScript assets with CSP; authenticated identity, scoped history, case coordination and migration 0005 passed from an isolated installed wheel. Human review/dry-run installed-wheel validation passed in the preceding increment. All 42 dependency pins and `pip check` passed.
 
 Trusted workflow defaults are configured through `WORK4CE_MAX_TOOL_CALLS` (2; range 1–8) and `WORK4CE_INVESTIGATION_TIMEOUT_SECONDS` (120 seconds; range 0.01–600). Request bodies cannot override these limits.
 
@@ -110,3 +116,5 @@ Structured model assistance is selected by the trusted `WORK4CE_REASONING_MODE` 
 
 
 Human review and synthetic action approvals are now available through [the review workflow](docs/tutorials/reviews.md). `WORK4CE_REQUIRE_HUMAN_REVIEW=true` gates report acceptance after collection; the default remains false for compatibility. Action proposals always require an approved report review and a separate approval from another actor. Simulation consumes a matching unexpired approval exactly once and records `dry_run:true, performed:false`; no external response is executed. Server-mapped OIDC `reviewer` is supported without investigation or simulation execution grants.
+
+Case assignment and escalation are available through [case coordination](docs/tutorials/cases.md). Eligible assignees come from trusted server configuration. Creators/current assignees coordinate their cases; managers can coordinate any case and acknowledge escalations. Reviewers have read access. These edits preserve the original workflow requester, report contents and independent approval gates. PostgreSQL requires migration `0005_cases` before starting the updated API; SQLite upgrades automatically.

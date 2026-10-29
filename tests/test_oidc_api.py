@@ -141,3 +141,47 @@ class OIDCAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await client.get('/reviews',headers=headers)).status_code,200)
             self.assertEqual((await client.get('/responses',headers=headers)).status_code,200)
             self.assertEqual((await client.post('/investigations',json={'query':'PowerShell'},headers=headers)).status_code,403)
+
+    async def test_case_directory_and_management_use_server_roles_not_jwt_claims(self):
+        from dataclasses import replace
+        settings=replace(self.settings,oidc_subject_roles=self.settings.oidc_subject_roles+(('reviewer-sub','reviewer'),))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        identity=self.store.begin(TENANT,'analyst-sub')
+        base='/investigations/'+identity+'/case'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            analyst=self.headers('analyst-sub',roles=['admin'],permissions=['cases:manage'],tenant='foreign')
+            directory=await client.get('/case-assignees',headers=analyst)
+            self.assertEqual(directory.json(),[{'subject':'admin-sub'},{'subject':'analyst-sub'}])
+            me=(await client.get('/me',headers=analyst)).json()
+            self.assertNotIn('cases:manage',me['permissions'])
+            invalid=await client.post(base+'/assignment',headers=analyst,
+                json={'expected_revision':0,'assignee':'reviewer-sub'})
+            self.assertEqual(invalid.status_code,422)
+            self.assertEqual((await client.post(base+'/assignment',headers=analyst,
+                json={'expected_revision':0,'assignee':'admin-sub'})).status_code,200)
+            self.assertEqual((await client.post(base+'/escalation',headers=analyst,
+                json={'expected_revision':1,'reason':'Signed-token case escalation.'})).status_code,200)
+            reviewer=self.headers('reviewer-sub',roles=['admin'])
+            self.assertEqual((await client.get(base,headers=reviewer)).status_code,200)
+            self.assertEqual((await client.get('/case-assignees',headers=reviewer)).status_code,403)
+            self.assertEqual((await client.post(base+'/acknowledge',headers=reviewer,json={'expected_revision':2})).status_code,403)
+            self.assertEqual((await client.post(base+'/acknowledge',headers=analyst,json={'expected_revision':2})).status_code,403)
+            self.assertEqual((await client.post(base+'/acknowledge',headers=self.headers('admin-sub'),
+                json={'expected_revision':2})).json()['escalation_state'],'acknowledged')
+
+    async def test_removed_directory_subject_cannot_be_assigned_again(self):
+        from dataclasses import replace
+        identity=self.store.begin(TENANT,'analyst-sub')
+        self.store.mutate_case(TENANT,'analyst-sub',identity,0,'assign',assignee='admin-sub')
+        settings=replace(self.settings,oidc_subject_roles=(('analyst-sub','analyst'),))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            base='/investigations/'+identity+'/case'
+            self.assertEqual((await client.get('/me',headers=self.headers('admin-sub'))).status_code,403)
+            response=await client.post(base+'/assignment',headers=self.headers('analyst-sub'),
+                json={'expected_revision':1,'assignee':'admin-sub'})
+            self.assertEqual(response.status_code,422)
+            cleared=await client.post(base+'/assignment',headers=self.headers('analyst-sub'),
+                json={'expected_revision':1,'assignee':None})
+            self.assertEqual(cleared.status_code,200,cleared.text)
+            self.assertIsNone(cleared.json()['assignee'])
