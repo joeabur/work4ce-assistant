@@ -61,6 +61,47 @@ type CaseCoord = {
   updated_by: string | null;
   updated_at: string | null;
 };
+type IncidentStatus = "open" | "in_progress" | "resolved" | "closed";
+type Incident = {
+  id: string;
+  investigation_id: string;
+  creator: string;
+  assignee: string | null;
+  title: string;
+  description: string;
+  severity: "low" | "medium" | "high" | "critical";
+  status: IncidentStatus;
+  revision: number;
+  created_by: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+  resolution_note: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  closed_by: string | null;
+  closed_at: string | null;
+};
+type IncidentEntry = {
+  id: string;
+  incident_id: string;
+  sequence: number;
+  kind: "created" | "note" | "status";
+  actor: string;
+  body: string;
+  evidence_ids: string[];
+  from_status: IncidentStatus | null;
+  to_status: IncidentStatus | null;
+  created_at: string;
+};
+const incidentStatusTitle = (status: IncidentStatus) =>
+  status === "in_progress"
+    ? "Start work"
+    : status === "resolved"
+      ? "Resolve incident"
+      : status === "closed"
+        ? "Close incident"
+        : "Reopen incident";
 type Report = {
   id: string;
   status: string;
@@ -74,6 +115,8 @@ type Report = {
   };
   review?: Review;
   case?: CaseCoord;
+  incident?: Incident;
+  incident_activity?: IncidentEntry[];
 };
 type Proposal = {
   id: string;
@@ -94,9 +137,17 @@ type Source = {
   synthetic: boolean;
 };
 type View =
-  "investigations" | "coordination" | "reviews" | "responses" | "integrations";
+  | "investigations"
+  | "coordination"
+  | "incidents"
+  | "reviews"
+  | "responses"
+  | "integrations";
 type Modal =
   | { kind: "new" }
+  | { kind: "incident_create"; record: Report }
+  | { kind: "incident_status"; incident: Incident; status: IncidentStatus }
+  | { kind: "incident_note"; incident: Incident; evidence: Evidence[] }
   | { kind: "case_assign"; coordination: CaseCoord }
   | { kind: "case_escalate"; coordination: CaseCoord }
   | { kind: "case_ack"; coordination: CaseCoord }
@@ -106,6 +157,14 @@ type Modal =
   | { kind: "simulate"; proposal: Proposal }
   | { kind: "revoke"; proposal: Proposal };
 const labels: Record<string, string> = {
+  open: "Open",
+  in_progress: "In progress",
+  resolved: "Resolved",
+  closed: "Closed",
+  low: "Low severity",
+  medium: "Medium severity",
+  high: "High severity",
+  critical: "Critical severity",
   requested: "Escalation requested",
   acknowledged: "Acknowledged",
   none: "Not escalated",
@@ -126,6 +185,24 @@ const labels: Record<string, string> = {
   needs_analyst_review: "Analyst review needed",
 };
 const messages: Record<string, string> = {
+  incident_revision_conflict:
+    "This incident changed. Refresh and review its latest state before trying again.",
+  incident_exists:
+    "This investigation already has an incident. Refresh to review its current details.",
+  incident_escalation_pending:
+    "A manager must acknowledge the pending case escalation before this incident can be resolved or closed.",
+  incident_closed:
+    "This incident is closed. A manager must reopen it before adding notes.",
+  incident_management_required:
+    "A manager must close or reopen a closed incident.",
+  incident_transition_invalid:
+    "That status change is no longer available. Refresh and review the current incident.",
+  incident_history_limit:
+    "This incident has reached its 200-entry activity limit. Its saved history remains available.",
+  incident_source_incomplete:
+    "Collect a synthetic investigation before creating its incident.",
+  invalid_incident_evidence:
+    "Choose evidence from this incident’s source investigation.",
   case_revision_conflict:
     "This case changed. Refresh and review its latest state before trying again.",
   case_assignee_ineligible:
@@ -278,7 +355,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 function Badge({ value }: { value: string }) {
   return (
     <span
-      className={`badge ${["completed", "approved", "consumed", "acknowledged"].includes(value) ? "positive" : ["pending", "awaiting_review", "queued", "running", "requested"].includes(value) ? "attention" : ["failed", "rejected", "review_rejected", "revoked"].includes(value) ? "negative" : "neutral"}`}
+      className={`badge ${["completed", "approved", "consumed", "acknowledged", "resolved"].includes(value) ? "positive" : ["pending", "awaiting_review", "queued", "running", "requested", "in_progress", "medium"].includes(value) ? "attention" : ["failed", "rejected", "review_rejected", "revoked", "high", "critical"].includes(value) ? "negative" : "neutral"}`}
     >
       <span />
       {labels[value] || value.replaceAll("_", " ")}
@@ -395,6 +472,7 @@ export default function Page() {
     [historyLoading, setHistoryLoading] = useState(false),
     [historyLoaded, setHistoryLoaded] = useState(false),
     [coordinationRows, setCoordinationRows] = useState<CaseCoord[]>([]),
+    [incidents, setIncidents] = useState<Incident[]>([]),
     [assignees, setAssignees] = useState<{ subject: string }[]>([]),
     [reviews, setReviews] = useState<Review[]>([]),
     [responses, setResponses] = useState<Proposal[]>([]),
@@ -437,6 +515,7 @@ export default function Page() {
     setHistoryLoading(false);
     setHistoryLoaded(false);
     setCoordinationRows([]);
+    setIncidents([]);
     setAssignees([]);
     setReviews([]);
     setResponses([]);
@@ -532,6 +611,7 @@ export default function Page() {
           ready,
           coordinated,
           candidates,
+          incidentRows,
         ] = await Promise.all([
           request<CasePage>("/investigations/history?limit=50"),
           identity.permissions.includes("responses:read")
@@ -552,6 +632,9 @@ export default function Page() {
           identity.permissions.includes("cases:coordinate")
             ? request<{ subject: string }[]>("/case-assignees")
             : Promise.resolve([]),
+          identity.permissions.includes("cases:read")
+            ? request<Incident[]>("/incidents")
+            : Promise.resolve([]),
         ]);
         if (generation !== epoch.current || version !== historyVersion.current)
           return;
@@ -564,6 +647,7 @@ export default function Page() {
         setHealthy(ready.connectors);
         setCoordinationRows(coordinated);
         setAssignees(candidates);
+        setIncidents(incidentRows);
       } catch (cause) {
         if (generation === epoch.current && version === historyVersion.current)
           fail(cause);
@@ -614,7 +698,7 @@ export default function Page() {
       setSelected(null);
       setDetailLoading(true);
       try {
-        const [item, coordination] = await Promise.all([
+        const [item, coordination, incidentData] = await Promise.all([
           request<Report>(`/investigations/${encodeURIComponent(id)}`),
           request<CaseCoord>(
             `/investigations/${encodeURIComponent(id)}/case`,
@@ -626,8 +710,37 @@ export default function Page() {
               return undefined;
             throw cause;
           }),
+          request<Incident>(
+            `/investigations/${encodeURIComponent(id)}/incident`,
+          )
+            .catch((cause) => {
+              if (
+                cause instanceof RequestError &&
+                [403, 404].includes(cause.status)
+              )
+                return undefined;
+              throw cause;
+            })
+            .then(async (initial) => {
+              if (!initial) return undefined;
+              let incident = initial;
+              for (let attempt = 0; attempt < 2; attempt++) {
+                const activity = await request<IncidentEntry[]>(
+                  `/incidents/${encodeURIComponent(incident.id)}/activity`,
+                );
+                if (activity.length === incident.revision)
+                  return { incident, activity };
+                if (attempt === 0)
+                  incident = await request<Incident>(
+                    `/investigations/${encodeURIComponent(id)}/incident`,
+                  );
+              }
+              throw new RequestError(409, "incident_revision_conflict");
+            }),
         ]);
         item.case = coordination;
+        item.incident = incidentData?.incident;
+        item.incident_activity = incidentData?.activity;
         if (generation === epoch.current && sequence === selection.current)
           setSelected(
             item.report
@@ -732,7 +845,11 @@ export default function Page() {
       if (generation === epoch.current) {
         if (
           cause instanceof RequestError &&
-          cause.code === "case_revision_conflict"
+          [
+            "case_revision_conflict",
+            "incident_revision_conflict",
+            "incident_exists",
+          ].includes(cause.code)
         ) {
           setModal(null);
           await refresh(me);
@@ -780,6 +897,61 @@ export default function Page() {
         if (generation === epoch.current) setBusy(false);
       }
       return;
+    }
+    if (current.kind === "incident_create")
+      return act(
+        () =>
+          request("/incidents", {
+            method: "POST",
+            body: JSON.stringify({
+              investigation_id: current.record.id,
+              title: String(data.get("title") || "").trim(),
+              description: String(data.get("description") || "").trim(),
+              severity: data.get("severity"),
+            }),
+          }),
+        "Incident created. Case and response permissions remain independently enforced.",
+        current.record.id,
+      );
+    if (current.kind === "incident_status")
+      return act(
+        () =>
+          request(
+            `/incidents/${encodeURIComponent(current.incident.id)}/status`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.incident.revision,
+                status: current.status,
+                comment: comment.trim(),
+              }),
+            },
+          ),
+        "Incident status updated.",
+        current.incident.investigation_id,
+      );
+    if (current.kind === "incident_note") {
+      const evidenceIDs = data.getAll("evidence_ids").map(String);
+      if (evidenceIDs.length > 10) {
+        setError("Choose up to 10 evidence citations for each note.");
+        return;
+      }
+      return act(
+        () =>
+          request(
+            `/incidents/${encodeURIComponent(current.incident.id)}/notes`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.incident.revision,
+                body: String(data.get("body") || "").trim(),
+                evidence_ids: evidenceIDs,
+              }),
+            },
+          ),
+        "Incident note added.",
+        current.incident.investigation_id,
+      );
     }
     if (current.kind === "case_assign")
       return act(
@@ -927,6 +1099,10 @@ export default function Page() {
       "Case coordination",
       "Coordinate assignments and escalate cases for management attention.",
     ],
+    incidents: [
+      "Incidents",
+      "Track case work, evidence notes and resolution decisions.",
+    ],
     reviews: [
       "Review queue",
       "Independent decisions, grounded in the evidence.",
@@ -961,6 +1137,7 @@ export default function Page() {
         cases.find((c) => c.id === selected.id)?.subject === me?.subject ||
         review?.requester === me?.subject,
       coordination = selected.case,
+      incident = selected.incident,
       canCoordinate = Boolean(
         coordination &&
         (has("cases:manage") ||
@@ -1074,6 +1251,239 @@ export default function Page() {
             </p>
           </section>
         )}
+        {has("cases:read") &&
+          (incident ||
+            (report &&
+              canCoordinate &&
+              ["completed", "awaiting_review", "review_rejected"].includes(
+                selected.status,
+              ))) && (
+            <section className="incident-detail" aria-label="Incident details">
+              <div className="coordination-heading">
+                <h3>Incident</h3>
+                {incident && <Badge value={incident.status} />}
+              </div>
+              {incident ? (
+                <>
+                  <h4 className="incident-title">{incident.title}</h4>
+                  <Badge value={incident.severity} />
+                  {incident.description && (
+                    <p className="incident-prose">{incident.description}</p>
+                  )}
+                  <dl className="coordination-facts">
+                    <div>
+                      <dt>Incident</dt>
+                      <dd>{short(incident.id)}</dd>
+                    </div>
+                    <div>
+                      <dt>Assignee</dt>
+                      <dd>{coordination?.assignee || "Unassigned"}</dd>
+                    </div>
+                    <div>
+                      <dt>Created by</dt>
+                      <dd>
+                        {incident.created_by} · {date(incident.created_at)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Updated by</dt>
+                      <dd>
+                        {incident.updated_by} · {date(incident.updated_at)}
+                      </dd>
+                    </div>
+                  </dl>
+                  {incident.resolution_note && (
+                    <div className="incident-resolution">
+                      <strong>Resolution note</strong>
+                      <p className="incident-prose">
+                        {incident.resolution_note}
+                      </p>
+                    </div>
+                  )}
+                  {incident.resolved_by && (
+                    <p className="incident-meta">
+                      Resolved by {incident.resolved_by} ·{" "}
+                      {date(incident.resolved_at || undefined)}
+                    </p>
+                  )}
+                  {incident.closed_by && (
+                    <p className="incident-meta">
+                      Closed by {incident.closed_by} ·{" "}
+                      {date(incident.closed_at || undefined)}
+                    </p>
+                  )}
+                  {canCoordinate && incident.revision < 200 && (
+                    <div className="button-row coordination-actions">
+                      {incident.status === "open" && (
+                        <button
+                          className="button secondary small"
+                          disabled={busy}
+                          onClick={() =>
+                            setModal({
+                              kind: "incident_status",
+                              incident,
+                              status: "in_progress",
+                            })
+                          }
+                        >
+                          Start work
+                        </button>
+                      )}
+                      {["open", "in_progress"].includes(incident.status) && (
+                        <button
+                          className="button primary small"
+                          disabled={
+                            busy ||
+                            coordination?.escalation_state === "requested"
+                          }
+                          onClick={() =>
+                            setModal({
+                              kind: "incident_status",
+                              incident,
+                              status: "resolved",
+                            })
+                          }
+                        >
+                          Resolve incident
+                        </button>
+                      )}
+                      {(incident.status === "resolved" ||
+                        (incident.status === "closed" &&
+                          has("cases:manage"))) && (
+                        <button
+                          className="button secondary small"
+                          disabled={busy}
+                          onClick={() =>
+                            setModal({
+                              kind: "incident_status",
+                              incident,
+                              status: "open",
+                            })
+                          }
+                        >
+                          Reopen incident
+                        </button>
+                      )}
+                      {incident.status === "resolved" &&
+                        has("cases:manage") && (
+                          <button
+                            className="button secondary small"
+                            disabled={
+                              busy ||
+                              coordination?.escalation_state === "requested"
+                            }
+                            onClick={() =>
+                              setModal({
+                                kind: "incident_status",
+                                incident,
+                                status: "closed",
+                              })
+                            }
+                          >
+                            Close incident
+                          </button>
+                        )}
+                      {incident.status !== "closed" && (
+                        <button
+                          className="button secondary small"
+                          disabled={busy}
+                          onClick={() =>
+                            setModal({
+                              kind: "incident_note",
+                              incident,
+                              evidence: report?.evidence || [],
+                            })
+                          }
+                        >
+                          Add incident note
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {coordination?.escalation_state === "requested" && (
+                    <p className="incident-pending">
+                      A manager must acknowledge the pending escalation before
+                      this incident can be resolved or closed.
+                    </p>
+                  )}
+                  <div className="section-title">
+                    <h3>Activity</h3>
+                    <span>
+                      {selected.incident_activity?.length || 0} loaded
+                    </span>
+                  </div>
+                  <ol
+                    className="incident-activity"
+                    aria-label="Incident activity"
+                  >
+                    {(selected.incident_activity || []).map((entry) => (
+                      <li key={entry.id}>
+                        <div className="incident-entry-heading">
+                          <strong>
+                            {entry.kind === "created"
+                              ? "Incident created"
+                              : entry.kind === "note"
+                                ? "Note added"
+                                : `${entry.from_status ? labels[entry.from_status] || entry.from_status : "Status"} → ${entry.to_status ? labels[entry.to_status] || entry.to_status : "Updated"}`}
+                          </strong>
+                          <time>{date(entry.created_at)}</time>
+                        </div>
+                        <span className="incident-meta">{entry.actor}</span>
+                        {entry.body && (
+                          <p className="incident-prose">{entry.body}</p>
+                        )}
+                        {!!entry.evidence_ids.length && (
+                          <div className="citation-row">
+                            {entry.evidence_ids.map((id) => {
+                              const index =
+                                report?.evidence.findIndex(
+                                  (item) => item.evidence_id === id,
+                                ) ?? -1;
+                              return index < 0 ? (
+                                <span key={id}>Source unavailable</span>
+                              ) : (
+                                <button key={id} onClick={() => citation(id)}>
+                                  <Icon name="link" size={12} />
+                                  Evidence {index + 1}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                  {incident.revision >= 200 && (
+                    <p className="incident-meta">
+                      This incident has reached its 200-entry activity limit.
+                      Its saved history remains available.
+                    </p>
+                  )}
+                  <p className="coordination-boundary">
+                    Activity shows up to 200 saved entries. Incident status does
+                    not approve a report, execute a response or transfer
+                    workflow ownership.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="incident-prose">
+                    Create an incident to track the work and resolution of this
+                    investigation.
+                  </p>
+                  <button
+                    className="button secondary small"
+                    disabled={busy}
+                    onClick={() =>
+                      setModal({ kind: "incident_create", record: selected })
+                    }
+                  >
+                    Create incident
+                  </button>
+                </>
+              )}
+            </section>
+          )}
         {!report ? (
           <Empty
             icon="clock"
@@ -1403,6 +1813,7 @@ export default function Page() {
                 "Case coordination",
                 coordinationRows.length,
               ],
+              ["incidents", "cases", "Incidents", incidents.length],
               ["reviews", "review", "Review queue", pending.length],
               [
                 "responses",
@@ -1416,7 +1827,8 @@ export default function Page() {
             .filter(
               (item) =>
                 (item[0] !== "reviews" || has("investigations:review")) &&
-                (item[0] !== "coordination" || has("cases:read")),
+                (!["coordination", "incidents"].includes(item[0]) ||
+                  has("cases:read")),
             )
             .map(([id, icon, label, count]) => (
               <button
@@ -1491,7 +1903,18 @@ export default function Page() {
               <button
                 className="button secondary"
                 disabled={loading || busy}
-                onClick={() => void refresh(me)}
+                onClick={() => {
+                  const id = selectedID.current,
+                    generation = epoch.current;
+                  void refresh(me).then(() => {
+                    if (
+                      id &&
+                      generation === epoch.current &&
+                      selectedID.current === id
+                    )
+                      void openCase(id);
+                  });
+                }}
               >
                 <Icon name="refresh" size={16} />
                 {loading ? "Refreshing…" : "Refresh"}
@@ -1749,6 +2172,73 @@ export default function Page() {
               {detailLoading ? (
                 <section className="panel">
                   <Loading text="Opening case…" />
+                </section>
+              ) : (
+                selected && detail()
+              )}
+            </div>
+          )}
+          {view === "incidents" && (
+            <div
+              className={`case-layout ${selected || detailLoading ? "has-detail" : ""}`}
+            >
+              <section className="panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Incidents in your scope</h2>
+                    <p>Saved incident work, severity and current assignee</p>
+                  </div>
+                  <span className="pill">{incidents.length} loaded</span>
+                </div>
+                {loading && !incidents.length ? (
+                  <Loading text="Loading incidents…" />
+                ) : incidents.length ? (
+                  <div className="case-rows">
+                    {incidents.map((item) => (
+                      <button
+                        data-testid={`incident-row-${item.id}`}
+                        key={item.id}
+                        className={`case-row ${selectedID.current === item.investigation_id ? "selected" : ""}`}
+                        onClick={() => void openCase(item.investigation_id)}
+                      >
+                        <span className="case-symbol">
+                          <Icon name="cases" size={19} />
+                        </span>
+                        <span className="case-row-content">
+                          <span className="case-row-title">
+                            {item.title}
+                            <Badge value={item.status} />
+                          </span>
+                          <span className="case-row-sub">
+                            <Badge value={item.severity} />
+                            <span>·</span>
+                            {item.assignee
+                              ? `Assigned to ${item.assignee}`
+                              : "Unassigned"}
+                          </span>
+                          <span className="incident-meta">
+                            Source INV-{short(item.investigation_id)} ·{" "}
+                            {date(item.updated_at)}
+                          </span>
+                        </span>
+                        <Icon name="arrow" size={16} />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty
+                    icon="cases"
+                    title="No incidents yet"
+                    text="Open a collected investigation and create an incident to track its work and resolution."
+                  />
+                )}
+                <p className="incident-list-limit">
+                  Up to 50 incidents in your current case scope.
+                </p>
+              </section>
+              {detailLoading ? (
+                <section className="panel">
+                  <Loading text="Opening incident evidence…" />
                 </section>
               ) : (
                 selected && detail()
@@ -2041,29 +2531,136 @@ export default function Page() {
       {modal && (
         <Dialog
           title={
-            modal.kind === "case_assign"
-              ? "Assign case"
-              : modal.kind === "case_escalate"
-                ? "Escalate case"
-                : modal.kind === "case_ack"
-                  ? "Acknowledge escalation"
-                  : modal.kind === "new"
-                    ? "Start an investigation"
-                    : modal.kind === "review"
-                      ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
-                      : modal.kind === "proposal"
-                        ? "Propose a synthetic dry run"
-                        : modal.kind === "decision"
-                          ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
-                          : modal.kind === "simulate"
-                            ? "Record this simulation?"
-                            : "Revoke this request?"
+            modal.kind === "incident_create"
+              ? "Create incident"
+              : modal.kind === "incident_status"
+                ? incidentStatusTitle(modal.status)
+                : modal.kind === "incident_note"
+                  ? "Add incident note"
+                  : modal.kind === "case_assign"
+                    ? "Assign case"
+                    : modal.kind === "case_escalate"
+                      ? "Escalate case"
+                      : modal.kind === "case_ack"
+                        ? "Acknowledge escalation"
+                        : modal.kind === "new"
+                          ? "Start an investigation"
+                          : modal.kind === "review"
+                            ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
+                            : modal.kind === "proposal"
+                              ? "Propose a synthetic dry run"
+                              : modal.kind === "decision"
+                                ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
+                                : modal.kind === "simulate"
+                                  ? "Record this simulation?"
+                                  : "Revoke this request?"
           }
           busy={busy}
           close={closeModal}
         >
           <form onSubmit={submit}>
-            {modal.kind === "case_assign" ? (
+            {modal.kind === "incident_create" ? (
+              <>
+                <p className="modal-copy">
+                  Track incident work for INV-{short(modal.record.id)}. Case
+                  permissions and independent report review still apply.
+                </p>
+                <label htmlFor="incident-title">Incident title</label>
+                <input
+                  id="incident-title"
+                  name="title"
+                  defaultValue={(
+                    modal.record.report?.query || "Investigation incident"
+                  ).slice(0, 200)}
+                  maxLength={200}
+                  required
+                  autoFocus
+                />
+                <label htmlFor="incident-description">
+                  Incident description{" "}
+                  <span className="optional">optional</span>
+                </label>
+                <textarea
+                  id="incident-description"
+                  aria-label="Incident description"
+                  name="description"
+                  rows={4}
+                  maxLength={2000}
+                />
+                <label htmlFor="incident-severity">Incident severity</label>
+                <select
+                  id="incident-severity"
+                  name="severity"
+                  defaultValue="medium"
+                >
+                  {["low", "medium", "high", "critical"].map((value) => (
+                    <option key={value} value={value}>
+                      {value.charAt(0).toUpperCase() + value.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : modal.kind === "incident_status" ? (
+              <>
+                <p className="modal-copy">
+                  {incidentStatusTitle(modal.status)} for {modal.incident.title}
+                  . This records the incident’s work status; report review and
+                  response approvals remain separate.
+                </p>
+                <label htmlFor="incident-status-comment">
+                  Status comment
+                  {modal.status === "in_progress" && (
+                    <span className="optional"> optional</span>
+                  )}
+                </label>
+                <textarea
+                  id="incident-status-comment"
+                  name="comment"
+                  rows={4}
+                  maxLength={2000}
+                  required={modal.status !== "in_progress"}
+                  autoFocus
+                />
+              </>
+            ) : modal.kind === "incident_note" ? (
+              <>
+                <p className="modal-copy">
+                  Add a saved note to {modal.incident.title}. Choose up to 10
+                  source citations from this investigation.
+                </p>
+                <label htmlFor="incident-note">Incident note</label>
+                <textarea
+                  id="incident-note"
+                  name="body"
+                  rows={4}
+                  maxLength={2000}
+                  required
+                  autoFocus
+                />
+                {!!modal.evidence.length && (
+                  <fieldset className="incident-evidence-choices">
+                    <legend>
+                      Evidence citations{" "}
+                      <span className="optional">optional · up to 10</span>
+                    </legend>
+                    {modal.evidence.map((item, index) => (
+                      <label key={item.evidence_id}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Evidence ${index + 1}`}
+                          name="evidence_ids"
+                          value={item.evidence_id}
+                        />
+                        <span>
+                          Evidence {index + 1}
+                          <small>{item.content.summary}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+              </>
+            ) : modal.kind === "case_assign" ? (
               <>
                 <p className="modal-copy">
                   Choose an approved analyst for case{" "}
@@ -2255,23 +2852,29 @@ export default function Page() {
               >
                 {busy
                   ? "Working…"
-                  : modal.kind === "case_assign"
-                    ? "Save assignment"
-                    : modal.kind === "case_escalate"
-                      ? "Request escalation"
-                      : modal.kind === "case_ack"
-                        ? "Acknowledge"
-                        : modal.kind === "new"
-                          ? "Investigate"
-                          : modal.kind === "proposal"
-                            ? "Request approval"
-                            : modal.kind === "simulate"
-                              ? "Record dry run"
-                              : modal.kind === "revoke"
-                                ? "Revoke request"
-                                : modal.decision === "approved"
-                                  ? "Approve"
-                                  : "Reject"}
+                  : modal.kind === "incident_create"
+                    ? "Create incident"
+                    : modal.kind === "incident_status"
+                      ? "Confirm status"
+                      : modal.kind === "incident_note"
+                        ? "Add note"
+                        : modal.kind === "case_assign"
+                          ? "Save assignment"
+                          : modal.kind === "case_escalate"
+                            ? "Request escalation"
+                            : modal.kind === "case_ack"
+                              ? "Acknowledge"
+                              : modal.kind === "new"
+                                ? "Investigate"
+                                : modal.kind === "proposal"
+                                  ? "Request approval"
+                                  : modal.kind === "simulate"
+                                    ? "Record dry run"
+                                    : modal.kind === "revoke"
+                                      ? "Revoke request"
+                                      : modal.decision === "approved"
+                                        ? "Approve"
+                                        : "Reject"}
               </button>
             </div>
           </form>

@@ -4,7 +4,7 @@ Case coordination adds operational responsibility to an investigation. It suppor
 
 ## Prepare
 
-Run the normal setup/build and start the API/reference services. SQLite automatically upgrades to `0005_cases`. Before starting the updated API with PostgreSQL, back up useful data and run:
+Run the normal setup/build and start the API/reference services. SQLite automatically upgrades through the current `0006_incidents` head. Before starting the updated API with PostgreSQL, back up useful data and run:
 
 ```sh
 .venv/bin/python -m work4ce_assistant database migrate
@@ -54,4 +54,4 @@ Reasons are trimmed, nonempty and at most 1,000 characters. They render as text.
 
 The backend suite covers tenant/role/assignee boundaries, signed-token directory admission, reassignment revocation, stale writes, a two-store race with one CAS winner, atomic audit rollback, restart persistence, SQLite v4 preservation and unchanged reports/workflows/reviews. Browser checks cover actual assignment, escalation, manager acknowledgment, literal hostile reason markup, stale-dialog rejection and mobile layout. Installed-wheel checks exercise migration 0005 and the API lifecycle. See [release readiness](../release-readiness.md).
 
-The queue is bounded without UI pagination. Full incident creation/linking, status/resolution, independent notes, full content history, SLA routing, external directory synchronization and notifications remain incomplete. No messages are sent to other people. Production remains disabled.
+The queue is bounded without UI pagination. [Linked incident management](incidents.md) now adds work/resolution status and authored note history. Multi-investigation grouping, full case-reason content history, SLA routing, external directory synchronization and notifications remain incomplete. No messages are sent to other people. Production remains disabled.

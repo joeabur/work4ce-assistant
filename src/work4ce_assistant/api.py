@@ -21,6 +21,7 @@ from .contracts import CapabilityManifest, ConnectorManifest, ExecutionContext, 
 from .fixtures import SEARCH_CAPABILITY
 from .gateway import Gateway
 from .investigation import Investigator
+from .incidents import IncidentService
 from .models import FixtureProvider, OpenAICompatibleProvider, ModelGateway
 from .reasoning import Reasoner
 from .reviews import ReviewService
@@ -245,6 +246,29 @@ class CaseEscalation(CaseRevision):
     reason: str = Field(min_length=1,max_length=1000)
 
 
+class IncidentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    investigation_id: UUID = Field(strict=False)
+    title: str = Field(min_length=1,max_length=200)
+    description: str = Field(default="",max_length=2000)
+    severity: Literal["low","medium","high","critical"]
+
+
+class IncidentRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    expected_revision: int = Field(ge=1,le=200)
+
+
+class IncidentStatus(IncidentRevision):
+    status: Literal["open","in_progress","resolved","closed"]
+    comment: str = Field(default="",max_length=2000)
+
+
+class IncidentNote(IncidentRevision):
+    body: str = Field(min_length=1,max_length=2000)
+    evidence_ids: list[Annotated[str,Field(min_length=1,max_length=128)]] = Field(default_factory=list,max_length=10)
+
+
 def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None, reasoner: Reasoner | None = None) -> FastAPI:
     own_store = gateway is None
     store = gateway.store if gateway else Store(settings.database)
@@ -269,6 +293,7 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     assignees = (frozenset({'demo-analyst','demo-admin'}) if settings.auth_mode=='demo' else
                  frozenset(subject for subject,role in settings.oidc_subject_roles if role in {'analyst','admin'}))
     cases = CaseService(store,TENANT,assignees)
+    incidents = IncidentService(cases)
     slots = asyncio.Semaphore(4)
     own_verifier = settings.auth_mode == "oidc" and verifier is None
     if own_verifier:
@@ -390,6 +415,34 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     @app.post("/investigations/{identity}/case/acknowledge")
     async def case_acknowledgment(identity: UUID,body: CaseRevision,ctx: Context):
         return cases.acknowledge(ctx,str(identity),body.expected_revision)
+
+    @app.post("/incidents",status_code=201)
+    async def create_incident(body: IncidentCreate,ctx: Context):
+        return incidents.create(ctx,str(body.investigation_id),body.title,body.description,body.severity)
+
+    @app.get("/incidents")
+    async def incident_queue(ctx: Context,limit: int=Query(default=50,ge=1,le=100)):
+        return incidents.list(ctx,limit=limit)
+
+    @app.get("/investigations/{identity}/incident")
+    async def investigation_incident(identity: UUID,ctx: Context):
+        return incidents.for_investigation(ctx,str(identity))
+
+    @app.get("/incidents/{identity}")
+    async def incident_detail(identity: UUID,ctx: Context):
+        return incidents.get(ctx,str(identity))
+
+    @app.get("/incidents/{identity}/activity")
+    async def incident_activity(identity: UUID,ctx: Context):
+        return incidents.activity(ctx,str(identity))
+
+    @app.post("/incidents/{identity}/status")
+    async def incident_status(identity: UUID,body: IncidentStatus,ctx: Context):
+        return incidents.transition(ctx,str(identity),body.expected_revision,body.status,body.comment)
+
+    @app.post("/incidents/{identity}/notes")
+    async def incident_note(identity: UUID,body: IncidentNote,ctx: Context):
+        return incidents.add_note(ctx,str(identity),body.expected_revision,body.body,body.evidence_ids)
 
     @app.get("/ready")
     async def ready(ctx: Context):

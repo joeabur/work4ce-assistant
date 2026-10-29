@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 from .contracts import Work4ceError, canonical, digest
 from .pagination import decode_history_cursor, encode_history_cursor
 
-HEAD = "0005_cases"
+HEAD = "0006_incidents"
 metadata = MetaData()
 investigations = Table("investigations", metadata,
     Column("id", Text, primary_key=True), Column("tenant", Text, nullable=False),
@@ -86,6 +86,18 @@ case_coordination = Table("case_coordination",metadata,
     Column("assignee",Text),Column("escalation_state",Text,nullable=False),Column("escalation_reason",Text),
     Column("escalated_by",Text),Column("escalated_at",Text),Column("acknowledged_by",Text),Column("acknowledged_at",Text),
     Column("revision",Integer,nullable=False),Column("updated_by",Text,nullable=False),Column("updated_at",Text,nullable=False))
+incidents_table = Table("incidents",metadata,
+    Column("id",Text,primary_key=True),Column("investigation_id",Text,ForeignKey("investigations.id"),nullable=False),
+    Column("tenant",Text,nullable=False),Column("report_hash",Text,nullable=False),Column("title",Text,nullable=False),
+    Column("description",Text,nullable=False),Column("severity",Text,nullable=False),Column("status",Text,nullable=False),
+    Column("revision",Integer,nullable=False),Column("created_by",Text,nullable=False),Column("created_at",Text,nullable=False),
+    Column("updated_by",Text,nullable=False),Column("updated_at",Text,nullable=False),Column("resolution_note",Text),
+    Column("resolved_by",Text),Column("resolved_at",Text),Column("closed_by",Text),Column("closed_at",Text))
+incident_activity = Table("incident_activity",metadata,
+    Column("id",Text,primary_key=True),Column("tenant",Text,nullable=False),
+    Column("incident_id",Text,ForeignKey("incidents.id"),nullable=False),Column("sequence",Integer,nullable=False),
+    Column("kind",Text,nullable=False),Column("actor",Text,nullable=False),Column("body",Text,nullable=False),
+    Column("evidence_ids",Text,nullable=False),Column("from_status",Text),Column("to_status",Text),Column("created_at",Text,nullable=False))
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 

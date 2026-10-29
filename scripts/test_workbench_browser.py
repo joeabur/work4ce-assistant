@@ -293,6 +293,110 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.logout()
         self.assertEqual(self.policy_errors,[])
 
+    def test_incident_lifecycle_and_note_history(self):
+        auth={'Authorization':'Bearer '+self.analyst}
+        source=self.http.post('/investigations',headers=auth,json={'query':'PowerShell'})
+        self.assertEqual(source.status_code,201)
+        original=source.json()
+        investigation_id=original['id']
+        self.login(self.analyst)
+        self.page.get_by_test_id('case-row-'+investigation_id).click()
+        self.page.get_by_role('button',name='Create incident',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Create incident',exact=True)
+        dialog.get_by_label('Incident title',exact=True).fill('Synthetic process triage')
+        dialog.get_by_label('Incident description',exact=True).fill('Human-created incident linked to collected synthetic evidence.')
+        dialog.get_by_label('Incident severity',exact=True).select_option('high')
+        with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/incidents')) as event:
+            dialog.get_by_role('button',name='Create incident',exact=True).click()
+        self.assertEqual(event.value.status,201)
+        incident=event.value.json()
+        identity=incident['id']
+        expect(dialog).not_to_be_visible()
+        details=self.page.get_by_role('region',name='Incident details',exact=True)
+        expect(details).to_be_visible()
+        self.navigate('Incidents')
+        self.page.get_by_test_id('incident-row-'+identity).click()
+        details.get_by_role('button',name='Add incident note',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Add incident note',exact=True)
+        markup='<img src=x onerror="window.__incident_xss=true"> Analyst observation of synthetic evidence.'
+        dialog.get_by_label('Incident note',exact=True).fill(markup)
+        dialog.get_by_label('Evidence 1',exact=True).check()
+        dialog.get_by_role('button',name='Add note',exact=True).click()
+        expect(dialog).not_to_be_visible()
+        expect(details.get_by_text(markup,exact=True)).to_be_visible()
+        self.assertEqual(details.locator('img').count(),0)
+        self.assertFalse(self.page.evaluate('Boolean(window.__incident_xss)'))
+        details.get_by_role('button',name='Evidence 1',exact=True).click()
+        evidence_id=original['report']['evidence'][0]['evidence_id']
+        expect(self.page.get_by_test_id('evidence-'+evidence_id)).to_have_class(re.compile('highlight'))
+        details.get_by_role('button',name='Start work',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Start work',exact=True)
+        dialog.get_by_role('button',name='Confirm status',exact=True).click()
+        expect(dialog).not_to_be_visible()
+        details.get_by_role('button',name='Resolve incident',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Resolve incident',exact=True)
+        resolution='Synthetic exercise disposition recorded; uncertain intent remains documented.'
+        dialog.get_by_label('Status comment',exact=True).fill(resolution)
+        dialog.get_by_role('button',name='Confirm status',exact=True).click()
+        expect(dialog).not_to_be_visible()
+        expect(details.get_by_text('Resolved',exact=True).first).to_be_visible()
+        self.assertEqual(details.get_by_role('button',name='Close incident',exact=True).count(),0)
+        self.assertEqual(self.http.get('/investigations/'+investigation_id,headers=auth).json(),original)
+        self.logout()
+        self.login(self.reviewer)
+        self.navigate('Incidents')
+        self.page.get_by_test_id('incident-row-'+identity).click()
+        details.get_by_role('button',name='Close incident',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Close incident',exact=True)
+        dialog.get_by_label('Status comment',exact=True).fill('Manager reviewed the human disposition.')
+        dialog.get_by_role('button',name='Confirm status',exact=True).click()
+        expect(dialog).not_to_be_visible()
+        expect(details.get_by_text('Closed',exact=True).first).to_be_visible()
+        self.assertEqual(details.get_by_role('button',name='Add incident note',exact=True).count(),0)
+        details.get_by_role('button',name='Reopen incident',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Reopen incident',exact=True)
+        dialog.get_by_label('Status comment',exact=True).fill('Additional synthetic context needs attention.')
+        dialog.get_by_role('button',name='Confirm status',exact=True).click()
+        expect(dialog).not_to_be_visible()
+        details.get_by_role('button',name='Add incident note',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Add incident note',exact=True)
+        concurrent=self.http.post('/incidents/'+identity+'/notes',headers=auth,
+            json={'expected_revision':6,'body':'Concurrent analyst context retained.'})
+        self.assertEqual(concurrent.status_code,200)
+        dialog.get_by_label('Incident note',exact=True).fill('Stale manager note must not overwrite history.')
+        with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/notes')) as event:
+            dialog.get_by_role('button',name='Add note',exact=True).click()
+        self.assertEqual(event.value.status,409)
+        expect(dialog).not_to_be_visible()
+        expect(details.get_by_text('Concurrent analyst context retained.',exact=True)).to_be_visible()
+        activity=self.http.get('/incidents/'+identity+'/activity',headers=auth).json()
+        self.assertEqual([item['sequence'] for item in activity],list(range(1,8)))
+        self.assertNotIn('Stale manager note',str(activity))
+        self.assertEqual(self.http.get('/investigations/'+investigation_id,headers=auth).json(),original)
+        raced=[]
+        def concurrent_view(route):
+            if raced:
+                route.continue_()
+                return
+            old=route.fetch()
+            updated=self.http.post('/incidents/'+identity+'/notes',headers=auth,
+                json={'expected_revision':7,'body':'Concurrent context during view loading.'})
+            self.assertEqual(updated.status_code,200)
+            raced.append(True)
+            route.fulfill(response=old)
+        pattern='**/investigations/'+investigation_id+'/incident'
+        self.page.route(pattern,concurrent_view)
+        self.page.get_by_test_id('incident-row-'+identity).click()
+        expect(details.get_by_text('Concurrent context during view loading.',exact=True)).to_be_visible()
+        self.page.unroute(pattern,concurrent_view)
+        self.assertEqual(len(raced),1)
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-incidents.png'),full_page=True)
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'))
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-incidents-mobile.png'),full_page=True)
+        self.logout()
+        self.assertEqual(self.policy_errors,[])
+
     def test_paginated_history_and_refresh_fence(self):
         from sqlalchemy import update
         from work4ce_assistant.api import TENANT

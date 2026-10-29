@@ -185,3 +185,29 @@ class OIDCAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 json={'expected_revision':1,'assignee':None})
             self.assertEqual(cleared.status_code,200,cleared.text)
             self.assertIsNone(cleared.json()['assignee'])
+
+    async def test_incident_read_and_management_follow_trusted_roles(self):
+        from dataclasses import replace
+        settings=replace(self.settings,oidc_subject_roles=self.settings.oidc_subject_roles+(('reviewer-sub','reviewer'),))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            analyst=self.headers('analyst-sub',roles=['admin'],tenant='foreign',permissions=['cases:manage'])
+            source=await client.post('/investigations',headers=analyst,json={'query':'PowerShell'})
+            self.assertEqual(source.status_code,201,source.text)
+            created=await client.post('/incidents',headers=analyst,json={'investigation_id':source.json()['id'],
+                'title':'Signed-token incident','severity':'medium'})
+            self.assertEqual(created.status_code,201,created.text)
+            base='/incidents/'+created.json()['id']
+            reviewer=self.headers('reviewer-sub',roles=['admin'])
+            self.assertEqual((await client.get(base,headers=reviewer)).status_code,200)
+            self.assertEqual((await client.get(base+'/activity',headers=reviewer)).status_code,200)
+            self.assertEqual((await client.post(base+'/notes',headers=reviewer,
+                json={'expected_revision':1,'body':'Read role cannot write notes.'})).status_code,403)
+            self.assertEqual((await client.post(base+'/status',headers=analyst,
+                json={'expected_revision':1,'status':'resolved','comment':'Analyst disposition.'})).status_code,200)
+            self.assertEqual((await client.post(base+'/status',headers=analyst,
+                json={'expected_revision':2,'status':'closed','comment':'Forged manager claim.'})).status_code,403)
+            closed=await client.post(base+'/status',headers=self.headers('admin-sub'),
+                json={'expected_revision':2,'status':'closed','comment':'Trusted manager disposition.'})
+            self.assertEqual(closed.status_code,200,closed.text)
+            self.assertEqual(closed.json()['closed_by'],'admin-sub')

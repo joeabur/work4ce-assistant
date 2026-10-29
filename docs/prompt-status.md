@@ -2,7 +2,7 @@
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 290-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 326-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
@@ -14,7 +14,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 | 9: MCP | Official SDK local stdio client/server, reviewed tool discovery and poisoning checks | Remote OAuth, broader transport/protocol compatibility and production server administration |
 | 10: agent | Deterministic bounded collection/reporting workflow with durable read-boundary checkpoints | General AI planning, hypothesis evaluation, autonomous correlation, multi-step review and full specialist/runtime design |
 | 11: model gateway | Typed provider contract, offline fixture, configured HTTPS adapter, strict plans/quotations, retries/circuit, durable usage and cache | Live-provider verification, broader routing/health, tokenizer-aware admission, enterprise redaction and independent AI evaluations |
-| 12–13: SOC/evidence | Literal-query synthetic telemetry, source-attributed evidence/reports, assignment and escalation coordination | Full OCSF model, triage, hunting, intelligence, detections, full incident lifecycle and evidence governance |
+| 12–13: SOC/evidence | Literal-query synthetic telemetry, source-attributed evidence/reports, assignment/escalation, single-source incident lifecycle and evidence-linked note history | Full OCSF model, triage, hunting, intelligence, detections, full incident lifecycle and evidence governance |
 | 14–16: policy/security/privacy | Independent read-only authorization, synthetic tenant isolation, JWT verification option, manifest/result checks | Live sensitive-executor integration, real multi-tenant identity, production TLS/RLS, privacy/retention/residency controls and formal security review |
 | 17–18: reliability/storage | SQLAlchemy/PostgreSQL, migrations, audit, deadlines, invocation/model usage bounds | Distributed observability, operational alerts, performance/recovery evidence, secure production storage |
 | 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, Next.js workbench using real APIs, evidence citations, review/response queues and connector status | Remaining SOC modules, OIDC redirect login/first-run wizard, broad labeled scenarios and complete CLI surface |
@@ -54,7 +54,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 290-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 326-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
 
@@ -75,3 +75,9 @@ Section 19 / Phase 10 now includes paginated investigation history through a bac
 A separate migration-0005 coordination record supports eligible-principal assignment/unassignment, escalation with a bounded reason and manager acknowledgment. A dedicated dashboard queue and case details use actual scoped APIs. Backend role/tenant/creator/current-assignee checks and transactional revision comparisons authorize each mutation; report execution ownership and independent review/approval bindings remain unchanged. Reviewers read operational context without edit grants. The latest backend/browser counts and installed-wheel evidence are in release readiness.
 
 This is partial incident-management delivery. Full incident creation/linking, status/resolution, independent note history, SLA routing, directory synchronization, external notifications and coordination-queue pagination remain incomplete. An acknowledgment does not constitute report acceptance or response approval.
+
+## Section 12.6 / 19 — Linked incident lifecycle and notes
+
+Migration6 implements one human-created incident per collected investigation, work/resolution/manager-close/reopen states, and authored append-only activity with validated source evidence references. The workbench uses real scoped incident/list/activity APIs and expected revisions. Current case assignment controls access, while report/workflow/approval ownership remains unchanged. Tests verify races, read consistency, state/history integrity and the durable 200-entry bound.
+
+This adds the first incident lifecycle beyond assignment/escalation. Standalone incidents, multi-investigation grouping, SLA routing, notifications, title/severity editing, cursor-paginated incident queues and broader enterprise incident operations remain incomplete. Human incident disposition is separate from report review and response approval.
