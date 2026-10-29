@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Request, Header
+from fastapi import Depends, FastAPI, Request, Header, Query
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +23,7 @@ from .investigation import Investigator
 from .models import FixtureProvider, OpenAICompatibleProvider, ModelGateway
 from .reasoning import Reasoner
 from .reviews import ReviewService
+from .web import PrivateResponses, mount_workbench
 from .storage import Store
 
 TENANT = "synthetic-demo"
@@ -288,6 +289,7 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     app = FastAPI(title="Work4ce Assistant", version="0.1.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(BodyLimit)
+    app.add_middleware(PrivateResponses)
     app.state.gateway = gateway
     app.state.store = store
     bearer = HTTPBearer(auto_error=False)
@@ -320,6 +322,19 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     async def error_handler(request: Request, error: Work4ceError):
         return JSONResponse({"error": error.code}, status_code=error.status,
                             headers={"WWW-Authenticate": "Bearer"} if error.status == 401 else {})
+
+    @app.get("/me")
+    async def me(ctx: Context):
+        return {"subject":ctx.subject,"tenant_id":ctx.tenant_id,"permissions":sorted(ctx.permissions),
+                "synthetic":ctx.synthetic,"review_required":settings.require_human_review,
+                "model_mode":settings.reasoning_mode}
+
+    @app.get("/investigations")
+    async def investigations(ctx: Context,limit: int=Query(default=50,ge=1,le=100)):
+        if "investigations:read" not in ctx.permissions:
+            raise Work4ceError("permission_denied",403)
+        return store.list_investigations(ctx.tenant_id,
+            subject=None if "investigations:review" in ctx.permissions else ctx.subject,limit=limit)
 
     @app.get("/health")
     async def health():
@@ -457,4 +472,5 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
             result={key:value for key,value in result.items() if key!="review"}
         return result
 
+    mount_workbench(app)
     return app

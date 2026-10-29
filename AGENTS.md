@@ -27,6 +27,8 @@ PYTHONPATH=src python -m work4ce_assistant serve
 
 See `README.md` for token configuration. Production services and credentials are not prerequisites for isolated synthetic tests. `python scripts/test_postgres.py` provisions its own disposable PostgreSQL integration database; never point tests at useful data. SQLite auto-migrates; PostgreSQL requires `python -m work4ce_assistant database migrate` before API startup.
 
+The Next.js/React/TypeScript workbench lives in `apps/dashboard`. Setup builds its static export with Node 24/npm and the frozen npm lockfile, then stages ignored assets in the Python package. Use `python scripts/build_dashboard.py` after UI changes, `npm run typecheck` from the dashboard directory, and `python scripts/test_workbench_browser.py` with Chromium/Chrome installed. The API serves the built workbench at `/workbench/`; see `docs/tutorials/workbench.md`. Browser credentials stay in memory, and UI controls never replace backend authorization. Preserve the strict CSP and safe text rendering of telemetry/comments.
+
 ## Contributions and phase gates
 
 Use typed Python interfaces and validated schemas. Keep dependencies and deployment components proportional to the feature. Tests must exercise failures, authorization and transport contracts, not merely object creation. Never weaken assertions or policy to pass a test. Verify actual transport behavior before claiming interoperability.

@@ -258,6 +258,56 @@ class Store:
                 output["status"] = {"pending":"awaiting_review", "approved":"completed", "rejected":"review_rejected"}[data["state"]]
             return output
 
+    def list_investigations(self, tenant: str, *, subject: str | None = None,
+                            limit: int = 50) -> list[dict[str, Any]]:
+        """Bounded analyst summaries; private reports and review details stay out."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise Work4ceError("invalid_queue_limit",422)
+        if subject is not None and (not isinstance(subject,str) or not 1 <= len(subject) <= 256):
+            raise Work4ceError("invalid_subject_filter",422)
+        joined = investigations.outerjoin(workflow_state, and_(
+            workflow_state.c.id == investigations.c.id, workflow_state.c.tenant == investigations.c.tenant,
+            workflow_state.c.subject == investigations.c.subject)).outerjoin(report_reviews, and_(
+                report_reviews.c.investigation_id == investigations.c.id,
+                report_reviews.c.tenant == investigations.c.tenant))
+        statement = select(investigations.c.id,investigations.c.subject,investigations.c.status,
+            investigations.c.created_at,investigations.c.updated_at,investigations.c.report,investigations.c.report_hash,
+            workflow_state.c.query.label("workflow_query"), report_reviews.c.state.label("review_state"),
+            report_reviews.c.report_hash.label("review_report_hash"),report_reviews.c.requester.label("review_requester"))
+        statement = statement.select_from(joined).where(investigations.c.tenant == tenant)
+        if subject is not None:
+            statement = statement.where(investigations.c.subject == subject)
+        statement = statement.order_by(investigations.c.created_at.desc(),investigations.c.id.desc()).limit(limit)
+        with self._connection() as connection:
+            rows = connection.execute(statement).all()
+        summaries = []
+        for row in rows:
+            try:
+                report = json.loads(row.report) if row.report is not None else None
+                if (report is None and row.report_hash is not None
+                        or report is not None and digest(report) != row.report_hash):
+                    raise ValueError("report hash mismatch")
+            except (ValueError,TypeError,RecursionError):
+                raise Work4ceError("report_integrity_failure",500) from None
+            fields = report if isinstance(report,dict) else {}
+            query = row.workflow_query if isinstance(row.workflow_query,str) else fields.get("query")
+            if not isinstance(query,str) or len(query) > 200:
+                query = None
+            assessment = fields.get("assessment")
+            if not isinstance(assessment,str) or len(assessment) > 200:
+                assessment = None
+            evidence = fields.get("evidence")
+            status = row.status
+            if row.review_state is not None:
+                if (row.review_state not in {"pending","approved","rejected"} or row.status != "completed"
+                        or row.review_report_hash != row.report_hash or row.review_requester != row.subject):
+                    raise Work4ceError("review_report_mismatch",409)
+                status = {"pending":"awaiting_review","approved":"completed","rejected":"review_rejected"}[row.review_state]
+            summaries.append({"id":row.id,"subject":row.subject,"status":status,"created_at":row.created_at,
+                "updated_at":row.updated_at,"query":query,"assessment":assessment,
+                "evidence_count":len(evidence) if isinstance(evidence,list) else 0,"review_state":row.review_state})
+        return summaries
+
     def enabled(self, tenant: str, connector_id: str) -> bool:
         with self._connection() as connection:
             value = connection.execute(select(connector_state.c.enabled).where(connector_state.c.tenant == tenant, connector_state.c.id == connector_id)).scalar()

@@ -4,11 +4,11 @@ Recommendation: **no-go for production**. The synthetic vertical slice and Postg
 
 ## Executed evidence
 
-`.venv/bin/python scripts/test_postgres.py` completed **225 tests in 82.533 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, nine OIDC API, 24 core, four real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration, four workflow API, 24 model gateway, 21 model storage, 13 grounding/reasoning, six model API, 25 review storage/migration and 13 review policy/API tests.
+`.venv/bin/python scripts/test_postgres.py` completed **243 tests in 92.805 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, nine OIDC API, 24 core, four real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration, four workflow API, 24 model gateway, 21 model storage, 13 grounding/reasoning, six model API, 25 review storage/migration and 13 review policy/API tests, 12 workbench storage cases and six workbench API/static cases.
 
 Migration `0002_workflows`, owner-scoped idempotency, atomic pending quota, persisted budgets/deadlines, checkpoint integrity, revision/lease fencing and cancellation passed. Four end-to-end tests terminate a real worker via `os._exit` after checkpoint commit, restart the API and resume after lease expiry. Both databases preserved evidence and made no second REST search. API tests verify quota 429, cancellation freeing capacity, owner/auth denial, filtered state metadata and rejected request-body budget injection.
 
-OIDC uses actual signatures and mocked HTTPS JWKS; no live IdP was verified. Current wheel build and isolated installed-wheel migration 0004/human review and dry-run completion passed. All 40 locked dependencies were clean-installed and verified; `pip check` passed. The lock lacks downloaded-artifact hashes and is not an advisory assessment.
+OIDC uses actual signatures and mocked HTTPS JWKS; no live IdP was verified. Current wheel build and isolated installed-wheel dashboard HTML/seven script assets, CSP, authenticated identity and migration 0004 passed. Installed-wheel human review/dry-run completion passed in the preceding increment. All 42 locked dependencies were clean-installed and verified; `pip check` passed. The lock lacks downloaded-artifact hashes and is not an advisory assessment.
 
 Phase 5 remains in progress: the structured planner and quotation assessment are constrained and fixture-tested; live model behavior, broader reasoning, general multi-step review coordination and automatic scheduling remain incomplete. See `prompt-status.md` for requirement correlation.
 
@@ -39,7 +39,7 @@ Production is disabled. OIDC operational lifecycle, TLS/RLS, database least priv
 
 Before enterprise deployment, provide live identity and authorization results, database operational evidence, connector isolation and credential reviews, supported capability/MCP versions, labeled AI evaluations, independent security findings, load measurements, restore/recovery drills, verified deployment artifacts and a residual-risk decision.
 
-Current install/start draft instructions were saved with migration 0004 and the 225-test runner. Runtime status is healthy/running with enforced networking. Cloud snapshot publication and restoration in a new task remain unverified; publication requires the product UI. A saved draft does not execute scripts or prove publication. No new publication attempt or failure cause has been established.
+Current install/start draft instructions were saved with migration 0004, the workbench build and backend/browser runners. Runtime status is healthy/running with enforced networking. Cloud snapshot publication and restoration in a new task remain unverified; publication requires the product UI. A saved draft does not execute scripts or prove publication. No new publication attempt or failure cause has been established.
 
 
 ## Model assistance evidence and limits
@@ -49,6 +49,12 @@ The current suite includes strict model contracts, mock HTTPS adapter calls, dur
 
 ## Review and approval evidence
 
-The 225-test suite verifies report-review persistence, requester/reviewer separation, stale review identifiers, action/report binding, expired/missing/mismatched/revoked/reused approvals, transaction rollback, source disablement and concurrent single consumption on SQLite/PostgreSQL. API tests reject forged actors and client-disabled review policy, validate the limited reviewer role, and protect private review notes from unrelated analysts. The installed wheel exercises migration 0004 and human review/approval/simulation through the same policy service.
+The 243-test suite verifies report-review persistence, requester/reviewer separation, stale review identifiers, action/report binding, expired/missing/mismatched/revoked/reused approvals, transaction rollback, source disablement and concurrent single consumption on SQLite/PostgreSQL. API tests reject forged actors and client-disabled review policy, validate the limited reviewer role, and protect private review notes from unrelated analysts. The installed wheel exercises migration 0004 and human review/approval/simulation through the same policy service.
 
 All simulated results record `dry_run:true` and `performed:false`. No privileged connector or command executes. Approval acceptance H remains partial until a separately isolated sensitive executor and authorized live integration undergo equivalent validation. Report-review backlog/retention, approval retraction workflows and production rate/identity controls remain incomplete.
+
+## Workbench evidence and limits
+
+Three real Chromium checks passed in 16.068 seconds against actual API/reference services: full analyst/reviewer/single-use simulation flow; no browser storage or cookies and sign-out on reload; literal markup rendering and 390px mobile usability. No CSP violations occurred. Desktop/mobile screenshots were inspected. The Next.js static production build, TypeScript check, repeated build-cache check, setup refresh and isolated wheel asset/auth checks passed. npm's production-dependency audit returned zero known vulnerabilities at this verification; it is not an independent security assessment.
+
+The dashboard implements a bounded loaded case view, evidence timeline/citations, report review, synthetic response approval/consumption, and integration status. Other SOC modules, full case/incident lifecycle, paginated history, OIDC redirect login, first-run onboarding and accessibility certification remain incomplete. Authentication uses an already-issued token in memory only. Production remains no-go.

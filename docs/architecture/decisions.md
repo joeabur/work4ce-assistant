@@ -52,7 +52,7 @@ Roles come only from a reviewed server-side subject-role mapping; duplicate keys
 
 Authenticated API request → deterministic investigator → capability registry/resolver → independent policy → integration gateway → approved REST or MCP connector → schema validation → normalized source-attributed synthetic evidence → stored incident report and audit.
 
-The services are logical components, not a commitment to deploy independent microservices. PostgreSQL and the OIDC adapter are implemented with the evidence above. Workflow workers, a dashboard, model-provider calls and enterprise operations remain separate future work.
+The services are logical components, not a commitment to deploy independent microservices. PostgreSQL and the OIDC adapter are implemented with the evidence above. Automatic workflow workers, complete dashboard coverage, live model-provider verification and enterprise operations remain future work.
 
 
 ## ADR-008 — Bounded durable read workflows
@@ -76,3 +76,9 @@ Fingerprint route, model, synthetic designation, prompt, schemas, prices and bud
 Keep machine collection state separate from a durable human report decision, preserving immutable report/evidence/model usage. An operator may require the gate at creation; owners may request it later. Server-mapped reviewers have distinct grants and cannot self-approve or run the simulation. Public report-read access does not imply permission to private review metadata.
 
 A separate policy service accepts only a bounded synthetic action/target/parameter contract and requires approved immutable report evidence plus a distinct action approval. Consumption locks the bound request, report, review and source connector rows; it checks current authorization, expiry and nonce matching, then atomically records a single dry run. No privilege-bearing response adapter or command is installed. This is an approval-lifecycle test boundary, not a production executor or OS isolation boundary. Live execution must be implemented separately and revalidated before use.
+
+## ADR-011 — Same-origin static analyst workbench
+
+Use the requested Next.js/React/TypeScript stack as a static export mounted by FastAPI at `/workbench/`. One application origin keeps the existing bearer API and backend policy authoritative without introducing a separate Node runtime or token proxy. Node is required at build time; generated assets are ignored in Git and included in a wheel only after the explicit dashboard build. Backend-only installations remain usable and report an unbuilt workbench as 503.
+
+Hold already-issued access tokens only in browser memory; use neither cookies nor persistent browser storage. Abort/fence old-session requests, render telemetry/comments as text and compute CSP hashes from trusted build output. `/me` exposes server permissions; a bounded case-summary API enforces owner/reviewer scope independently of the UI. Metrics describe loaded data rather than fabricated SOC analytics. This increment covers investigations, evidence, human decisions, synthetic approvals and integration status. OIDC redirect login, full incident/SOC modules and complete integration administration remain separate work.

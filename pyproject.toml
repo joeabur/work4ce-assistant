@@ -15,10 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["packaging==26.3"]
+dev = ["packaging==26.3", "playwright==1.62.0"]
 
 [project.scripts]
 work4ce = "work4ce_assistant.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
+
+[tool.setuptools.package-data]
+work4ce_assistant = ["web_assets/*", "web_assets/**/*"]

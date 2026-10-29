@@ -2,14 +2,14 @@
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 225-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 243-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
 | Master sections | Current delivery | Remaining material requirements |
 |---|---|---|
 | 0–3: identity and architecture | Working modular Python package, capability-oriented investigator, protocol-independent gateway | Full enterprise platform and broad integration categories remain roadmap scope |
-| 4–5: stack and boundaries | FastAPI/Pydantic/JSON Schema, SQLAlchemy/Alembic, official MCP SDK, trusted backend policy | LangGraph, frontend, enterprise identity/deployment/observability, live model-runtime verification |
+| 4–5: stack and boundaries | FastAPI/Pydantic/JSON Schema, SQLAlchemy/Alembic, official MCP SDK, trusted backend policy | LangGraph, complete dashboard coverage, enterprise identity/deployment/observability, live model-runtime verification |
 | 6–8: integrations, registry and CDK | Typed connector/manifests, reviewed registration, compatible schemas, generic capability names, explicit tenant/connector grants, real reference adapters | Complete CDK packaging/signing, external plugin isolation, credential lifecycle, arbitrary production scopes/protocols |
 | 9: MCP | Official SDK local stdio client/server, reviewed tool discovery and poisoning checks | Remote OAuth, broader transport/protocol compatibility and production server administration |
 | 10: agent | Deterministic bounded collection/reporting workflow with durable read-boundary checkpoints | General AI planning, hypothesis evaluation, autonomous correlation, multi-step review and full specialist/runtime design |
@@ -17,7 +17,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 | 12–13: SOC/evidence | Literal-query synthetic telemetry, normalized source-attributed evidence, hashes and stored reports | Full OCSF model, triage, hunting, intelligence, detections, incident lifecycle and evidence governance |
 | 14–16: policy/security/privacy | Independent read-only authorization, synthetic tenant isolation, JWT verification option, manifest/result checks | Live sensitive-executor integration, real multi-tenant identity, production TLS/RLS, privacy/retention/residency controls and formal security review |
 | 17–18: reliability/storage | SQLAlchemy/PostgreSQL, migrations, audit, deadlines, invocation/model usage bounds | Distributed observability, operational alerts, performance/recovery evidence, secure production storage |
-| 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, guided setup | Dashboard, browser login/first-run wizard, broad labeled scenarios and complete CLI surface |
+| 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, Next.js workbench using real APIs, evidence citations, review/response queues and connector status | Remaining SOC modules, OIDC redirect login/first-run wizard, broad labeled scenarios and complete CLI surface |
 | 23–24: repository/docs | Modular source/tests, exact specification, agent guidance, progress/threat/readiness records | Ongoing documentation verification as implementation expands |
 | 25–27: tests/CI | Core, transport, OIDC fixture, storage/migration and real end-to-end tests; CI workflow prepared | Full A–J acceptance, AI evaluations, complete security/supply-chain scans, remote CI evidence |
 | 28–31: deployment/roadmap/readiness | Digest-pinned development PostgreSQL service, isolated database runner, explicit production no-go | Backend deployment validation, secure enterprise operations and most later roadmap phases |
@@ -54,8 +54,14 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 225-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 243-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
 
 Migration `0004_reviews` implements durable human report acceptance and synthetic action approvals. Requester/reviewer separation, exact request/report binding, current source grants, expiry, revocation and single use pass on SQLite/PostgreSQL. Approval acceptance H is only exercised against a no-effect dry-run consumer, so a live privileged executor and production response validation remain incomplete.
+
+## Section 19 / Phase 10 — First dashboard slice
+
+Next.js, React and TypeScript implement investigations, evidence timelines/citations, independent report review, separate synthetic response approvals and connector status. API identity drives visible controls, while backend policy authorizes every operation. Analysts list their own cases; reviewers list cases in their tenant. GET `/me` and bounded GET `/investigations` expose summaries without private notes or approval nonces. The static export is packaged with FastAPI under `/workbench/`.
+
+Three Chromium checks passed: analyst → reviewer → action approval → original-analyst dry run; memory-only sessions and literal untrusted markup; mobile usability without horizontal overflow. The production build, typecheck and installed-wheel static assets passed. This is a partial Phase 10 delivery. Overview analytics, alerts/incidents, AI chat, hunting, detection/intelligence, registry/MCP administration, audit/admin views, connector registration/enablement, first-run wizard and OIDC redirect login remain incomplete. Existing resume/cancel/review controls are available in the case view; no automatic worker or live action is added.
