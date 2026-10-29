@@ -23,6 +23,7 @@ from .gateway import Gateway
 from .investigation import Investigator
 from .incidents import IncidentService
 from .models import FixtureProvider, OpenAICompatibleProvider, ModelGateway
+from .onboarding import setup_status
 from .reasoning import Reasoner
 from .reviews import ReviewService
 from .web import PrivateResponses, mount_workbench
@@ -383,6 +384,13 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
         return {"subject":ctx.subject,"tenant_id":ctx.tenant_id,"permissions":sorted(ctx.permissions),
                 "synthetic":ctx.synthetic,"review_required":settings.require_human_review,
                 "model_mode":settings.reasoning_mode}
+
+    @app.get("/onboarding/status")
+    async def onboarding(ctx: Context):
+        return await setup_status(store,gateway,ctx,auth_mode=settings.auth_mode,
+            administrator_configured=(settings.auth_mode=='demo' or any(role=='admin' for _,role in settings.oidc_subject_roles)),
+            reasoning_mode=settings.reasoning_mode,review_required=settings.require_human_review,
+            max_tool_calls=settings.workflow_max_tool_calls,timeout_seconds=settings.workflow_duration_seconds)
 
     @app.get("/investigations")
     async def investigations(ctx: Context,limit: int=Query(default=50,ge=1,le=100)):

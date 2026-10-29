@@ -152,7 +152,28 @@ type Source = {
   enabled: boolean;
   synthetic: boolean;
 };
+type OnboardingStatus = {
+  mode: "demo";
+  synthetic: true;
+  production_enabled: false;
+  authentication: { mode: "demo" | "oidc"; administrator_configured: boolean };
+  database: { status: "ready" | "unavailable"; schema_revision: string | null };
+  reasoning: {
+    mode: "deterministic" | "fixture" | "provider";
+    health_checked: false;
+  };
+  policy: {
+    review_required: boolean;
+    response_mode: "simulation_only";
+    max_tool_calls: number;
+    timeout_seconds: number;
+  };
+  connectors: (Source & { health: "healthy" | "unhealthy" | "disabled" })[];
+  can_investigate: boolean;
+  ready_for_investigation: boolean;
+};
 type View =
+  | "getting-started"
   | "investigations"
   | "coordination"
   | "incidents"
@@ -510,6 +531,17 @@ export default function Page() {
     [sources, setSources] = useState<Source[]>([]),
     [healthy, setHealthy] = useState<string[]>([]),
     [selected, setSelected] = useState<Report | null>(null);
+  const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null),
+    [onboardingLoading, setOnboardingLoading] = useState(false),
+    [onboardingError, setOnboardingError] = useState(""),
+    [onboardingStep, setOnboardingStep] = useState(0);
+  const onboardingVersion = useRef(0),
+    onboardingRequest = useRef<AbortController | null>(null);
+  const invalidateOnboarding = useCallback(() => {
+    onboardingVersion.current++;
+    onboardingRequest.current?.abort();
+    onboardingRequest.current = null;
+  }, []);
   const [loading, setLoading] = useState(false),
     [detailLoading, setDetailLoading] = useState(false),
     [busy, setBusy] = useState(false),
@@ -538,6 +570,7 @@ export default function Page() {
   const has = (p: string) => Boolean(me?.permissions.includes(p));
   const logout = useCallback(() => {
     epoch.current++;
+    invalidateOnboarding();
     token.current = "";
     createIntent.current = null;
     requests.current.forEach((c) => c.abort());
@@ -551,6 +584,10 @@ export default function Page() {
     incidentBusy.current = false;
     workspaceRefreshing.current = false;
     setMe(null);
+    setOnboarding(null);
+    setOnboardingLoading(false);
+    setOnboardingError("");
+    setOnboardingStep(0);
     setTokenInput("");
     setConnecting(false);
     setCases([]);
@@ -581,7 +618,7 @@ export default function Page() {
     setSearch("");
     setFilter("all");
     setHighlight("");
-  }, []);
+  }, [invalidateOnboarding]);
   useEffect(() => () => requests.current.forEach((c) => c.abort()), []);
   const request = useCallback(
     async <T,>(
@@ -592,6 +629,9 @@ export default function Page() {
       const generation = epoch.current,
         controller = new AbortController();
       requests.current.add(controller);
+      const abortLinked = () => controller.abort(init.signal?.reason);
+      if (init.signal?.aborted) abortLinked();
+      else init.signal?.addEventListener("abort", abortLinked, { once: true });
       const timer = window.setTimeout(
         () =>
           controller.abort(
@@ -626,6 +666,7 @@ export default function Page() {
       } finally {
         clearTimeout(timer);
         requests.current.delete(controller);
+        init.signal?.removeEventListener("abort", abortLinked);
       }
     },
     [],
@@ -645,6 +686,51 @@ export default function Page() {
     },
     [logout],
   );
+  const checkOnboarding = useCallback(async () => {
+    invalidateOnboarding();
+    const generation = epoch.current,
+      version = onboardingVersion.current,
+      controller = new AbortController();
+    onboardingRequest.current = controller;
+    setOnboarding(null);
+    setOnboardingError("");
+    setOnboardingLoading(true);
+    try {
+      const status = await request<OnboardingStatus>("/onboarding/status", {
+        signal: controller.signal,
+      });
+      if (generation !== epoch.current || version !== onboardingVersion.current)
+        return;
+      setOnboarding(status);
+    } catch (cause) {
+      if (
+        generation === epoch.current &&
+        version === onboardingVersion.current
+      ) {
+        if (cause instanceof RequestError && cause.status === 401) fail(cause);
+        else if (!(
+          cause instanceof DOMException && cause.name === "AbortError"
+        ))
+          setOnboardingError(
+            "Setup validation could not be completed. Recheck setup before starting a guided investigation.",
+          );
+      }
+    } finally {
+      if (
+        generation === epoch.current &&
+        version === onboardingVersion.current
+      ) {
+        onboardingRequest.current = null;
+        setOnboardingLoading(false);
+      }
+    }
+  }, [request, fail, invalidateOnboarding]);
+  useEffect(() => {
+    if (!me || view !== "getting-started") return;
+    setOnboardingStep(0);
+    void checkOnboarding();
+    return invalidateOnboarding;
+  }, [me, view, checkOnboarding, invalidateOnboarding]);
   const refresh = useCallback(
     async (identity: Me) => {
       const generation = epoch.current,
@@ -1027,10 +1113,16 @@ export default function Page() {
     }
   };
   const navigate = (next: View) => {
+    invalidateOnboarding();
+    setOnboarding(null);
+    setOnboardingError("");
+    setOnboardingLoading(false);
+    setOnboardingStep(0);
+    if (next === "getting-started" && view === next) void checkOnboarding();
     setView(next);
     setError("");
     setNotice("");
-    if (me) void refresh(me);
+    if (me && next !== "getting-started") void refresh(me);
   };
   const act = async (
     operation: () => Promise<unknown>,
@@ -1097,6 +1189,7 @@ export default function Page() {
         });
         if (generation !== epoch.current) return;
         setModal(null);
+        invalidateOnboarding();
         setView("investigations");
         createIntent.current = null;
         setNotice("Investigation collected. Review the evidence below.");
@@ -1371,6 +1464,10 @@ export default function Page() {
       )
       .filter((host, index, all) => all.indexOf(host) === index) || [];
   const titles: Record<View, [string, string]> = {
+    "getting-started": [
+      "Getting started",
+      "Check your synthetic workspace and follow a first investigation.",
+    ],
     investigations: [
       "Investigations",
       "From a question to source-attributed evidence.",
@@ -2204,6 +2301,7 @@ export default function Page() {
         <nav aria-label="Workspace navigation">
           {(
             [
+              ["getting-started", "shield", "Getting started", 0],
               ["investigations", "cases", "Investigations", cases.length],
               [
                 "coordination",
@@ -2237,7 +2335,9 @@ export default function Page() {
               >
                 <Icon name={icon} />
                 <span>{label}</span>
-                <span className="nav-count">{count}</span>
+                {id !== "getting-started" && (
+                  <span className="nav-count">{count}</span>
+                )}
               </button>
             ))}
         </nav>
@@ -2300,8 +2400,12 @@ export default function Page() {
             <div className="heading-actions">
               <button
                 className="button secondary"
-                disabled={loading || busy}
+                disabled={loading || busy || onboardingLoading}
                 onClick={() => {
+                  if (view === "getting-started") {
+                    void checkOnboarding();
+                    return;
+                  }
                   const id = selectedID.current,
                     generation = epoch.current;
                   void refresh(me).then(() => {
@@ -2315,9 +2419,9 @@ export default function Page() {
                 }}
               >
                 <Icon name="refresh" size={16} />
-                {loading ? "Refreshing…" : "Refresh"}
+                {loading || onboardingLoading ? "Refreshing…" : "Refresh"}
               </button>
-              {has("investigations:run") && (
+              {has("investigations:run") && view !== "getting-started" && (
                 <button
                   className="button primary"
                   onClick={() => {
@@ -2351,6 +2455,382 @@ export default function Page() {
                 <Icon name="close" size={16} />
               </button>
             </div>
+          )}
+          {view === "getting-started" && (
+            <section
+              className="onboarding-shell"
+              aria-label="Synthetic workspace setup"
+            >
+              <ol
+                className="onboarding-steps"
+                aria-label="Getting started steps"
+              >
+                {["Welcome", "Validate setup", "First investigation"].map(
+                  (title, index) => (
+                    <li key={title}>
+                      <button
+                        className={`onboarding-step ${onboardingStep === index ? "active" : ""}`}
+                        aria-current={
+                          onboardingStep === index ? "step" : undefined
+                        }
+                        aria-label={title}
+                        disabled={
+                          index === 2 && (!onboarding || onboardingLoading)
+                        }
+                        onClick={() => setOnboardingStep(index)}
+                      >
+                        <span>{index + 1}</span>
+                        {title}
+                      </button>
+                    </li>
+                  ),
+                )}
+              </ol>
+              <article className="panel onboarding-panel">
+                {onboardingStep === 0 && (
+                  <>
+                    <span className="eyebrow">
+                      A GUIDED SYNTHETIC INVESTIGATION
+                    </span>
+                    <h2>Welcome to your workspace</h2>
+                    <p>
+                      Start with a workspace check, investigate a sample
+                      PowerShell event, and follow its source evidence. Your
+                      existing sign-in is used throughout.
+                    </p>
+                    <div className="onboarding-boundary">
+                      <Icon name="shield" />
+                      <div>
+                        <strong>Synthetic data. Human decisions.</strong>
+                        <p>
+                          This walkthrough uses isolated demo telemetry.
+                          Response simulations record an audit result and never
+                          change an endpoint.
+                        </p>
+                      </div>
+                    </div>
+                    <p>
+                      Environment and account settings are managed by your
+                      operator. This guide reads the current setup and does not
+                      provision accounts, register connectors or change security
+                      policy.
+                    </p>
+                    <div className="onboarding-actions">
+                      <button
+                        className="button primary"
+                        onClick={() => setOnboardingStep(1)}
+                      >
+                        Continue to validation
+                        <Icon name="arrow" size={16} />
+                      </button>
+                    </div>
+                  </>
+                )}
+                {onboardingStep === 1 && (
+                  <>
+                    <div className="onboarding-section-heading">
+                      <div>
+                        <span className="eyebrow">CURRENT WORKSPACE CHECK</span>
+                        <h2>Validate your setup</h2>
+                      </div>
+                      <button
+                        className="button secondary"
+                        disabled={onboardingLoading}
+                        onClick={() => void checkOnboarding()}
+                      >
+                        <Icon name="refresh" size={16} />
+                        {onboardingLoading
+                          ? "Checking setup…"
+                          : "Recheck setup"}
+                      </button>
+                    </div>
+                    <p>
+                      These checks use your current identity and permitted
+                      connectors. Connector health is checked without collecting
+                      events or making a model inference.
+                    </p>
+                  </>
+                )}
+                {onboardingStep === 2 && (
+                  <>
+                    <span className="eyebrow">FOLLOW THE EVIDENCE</span>
+                    <h2>Your first investigation</h2>
+                    <p>
+                      Investigate PowerShell activity in the synthetic dataset.
+                      Review the query before submitting; the existing
+                      investigation workflow applies its current permissions and
+                      limits.
+                    </p>
+                    <ol className="onboarding-walkthrough">
+                      <li>
+                        <strong>Ask a bounded question.</strong> Start with
+                        PowerShell. The gateway selects an authorized, enabled
+                        connector.
+                      </li>
+                      <li>
+                        <strong>Inspect the evidence.</strong> Open a finding’s
+                        citation to highlight its source event. Missing
+                        telemetry remains inconclusive.
+                      </li>
+                      <li>
+                        <strong>Make a human decision.</strong> Request
+                        independent report review, assign or escalate the case,
+                        or track work in an incident.
+                      </li>
+                    </ol>
+                    <p>
+                      Report acceptance and synthetic response approval are
+                      separate decisions. An investigation does not authorize a
+                      response action.
+                    </p>
+                  </>
+                )}
+                {onboardingStep > 0 && (
+                  <>
+                    {onboardingLoading && (
+                      <Loading text="Checking current workspace setup…" />
+                    )}
+                    {onboardingError && (
+                      <div className="alert error" role="alert">
+                        {onboardingError}
+                      </div>
+                    )}
+                    {!onboardingLoading && !onboarding && !onboardingError && (
+                      <p>Validate the current setup before continuing.</p>
+                    )}
+                    {onboarding && !onboardingLoading && (
+                      <div data-testid="onboarding-status">
+                        <div
+                          className={`onboarding-readiness ${onboarding.ready_for_investigation ? "ready" : "attention"}`}
+                          role="status"
+                        >
+                          <Icon
+                            name={
+                              onboarding.ready_for_investigation
+                                ? "check"
+                                : "shield"
+                            }
+                          />
+                          <div>
+                            <strong>
+                              {onboarding.ready_for_investigation
+                                ? "Ready for a synthetic investigation"
+                                : "Setup needs attention"}
+                            </strong>
+                            <p>
+                              {!onboarding.can_investigate
+                                ? "Your current role can inspect this setup but cannot start investigations. Open the workspace to review available cases."
+                                : onboarding.ready_for_investigation
+                                  ? "The database and at least one permitted connector passed the check."
+                                  : "A ready database and a healthy, enabled permitted connector are required. Ask your operator to address failed checks, then recheck setup."}
+                            </p>
+                          </div>
+                        </div>
+                        {onboardingStep === 1 && (
+                          <>
+                            <dl className="onboarding-checks">
+                              <div>
+                                <dt>Signed-in identity</dt>
+                                <dd>
+                                  {me.subject}
+                                  <small>{me.tenant_id}</small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Authentication</dt>
+                                <dd>
+                                  {onboarding.authentication.mode === "oidc"
+                                    ? "OIDC access token"
+                                    : "Isolated demo access token"}
+                                  <small>
+                                    {onboarding.authentication
+                                      .administrator_configured
+                                      ? "An administrator is configured by the operator."
+                                      : "No administrator is configured. Ask your operator to configure independent review access."}
+                                  </small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Database</dt>
+                                <dd>
+                                  {onboarding.database.status === "ready"
+                                    ? "Ready"
+                                    : "Unavailable"}
+                                  <small>
+                                    {onboarding.database.schema_revision
+                                      ? `Schema ${onboarding.database.schema_revision}`
+                                      : "Schema check unavailable"}
+                                  </small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Reasoning</dt>
+                                <dd>
+                                  {onboarding.reasoning.mode === "deterministic"
+                                    ? "Deterministic — no LLM"
+                                    : onboarding.reasoning.mode === "fixture"
+                                      ? "Offline model fixture — no LLM"
+                                      : "Configured external provider"}
+                                  <small>
+                                    {onboarding.reasoning.mode === "provider"
+                                      ? "Provider connectivity, model behavior and billing are not checked by this guide."
+                                      : "This mode does not make a live model request."}
+                                  </small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Report review</dt>
+                                <dd>
+                                  {onboarding.policy.review_required
+                                    ? "Independent review required"
+                                    : "Review available on request"}
+                                  <small>
+                                    Response proposals always require approved
+                                    report review and a separate approval.
+                                  </small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Investigation limits</dt>
+                                <dd>
+                                  {onboarding.policy.max_tool_calls} tool calls
+                                  · {onboarding.policy.timeout_seconds} seconds
+                                  <small>
+                                    Limits are set by the backend operator.
+                                  </small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Response authority</dt>
+                                <dd>
+                                  Simulation only
+                                  <small>
+                                    No privileged command or live response
+                                    executes.
+                                  </small>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Data environment</dt>
+                                <dd>
+                                  Synthetic demo
+                                  <small>
+                                    Production mode remains disabled.
+                                  </small>
+                                </dd>
+                              </div>
+                            </dl>
+                            <h3>Permitted connectors</h3>
+                            <p className="onboarding-caption">
+                              Only sources permitted for your current identity
+                              appear. A disabled or unavailable source does not
+                              block the walkthrough when another permitted
+                              source is healthy.
+                            </p>
+                            {onboarding.connectors.length ? (
+                              <ul
+                                className="onboarding-connectors"
+                                aria-label="Setup connector checks"
+                              >
+                                {onboarding.connectors.map((source) => (
+                                  <li
+                                    key={source.connector_id}
+                                    data-testid={`onboarding-connector-${source.connector_id}`}
+                                  >
+                                    <div>
+                                      <strong>{source.connector_id}</strong>
+                                      <small>
+                                        {source.protocol.toUpperCase()} ·
+                                        Synthetic
+                                      </small>
+                                    </div>
+                                    <span
+                                      className={`pill ${source.health === "healthy" ? "good" : ""}`}
+                                    >
+                                      {source.health === "healthy"
+                                        ? "Healthy"
+                                        : source.health === "disabled"
+                                          ? "Disabled"
+                                          : "Unavailable"}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="onboarding-empty">
+                                No permitted connectors are registered for this
+                                identity. Ask your operator to configure an
+                                approved source, then recheck setup.
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                    <div className="onboarding-actions">
+                      {onboardingStep === 1 ? (
+                        <button
+                          className="button primary"
+                          disabled={!onboarding || onboardingLoading}
+                          onClick={() => setOnboardingStep(2)}
+                        >
+                          Continue to first investigation
+                          <Icon name="arrow" size={16} />
+                        </button>
+                      ) : (
+                        <button
+                          className="button primary"
+                          disabled={
+                            !onboarding?.ready_for_investigation ||
+                            !onboarding.can_investigate ||
+                            !has("investigations:run") ||
+                            onboardingLoading ||
+                            busy
+                          }
+                          onClick={() => {
+                            if (
+                              onboarding?.ready_for_investigation &&
+                              onboarding.can_investigate &&
+                              has("investigations:run") &&
+                              !onboardingLoading
+                            ) {
+                              setError("");
+                              setModal({ kind: "new" });
+                            }
+                          }}
+                        >
+                          Start guided investigation
+                          <Icon name="arrow" size={16} />
+                        </button>
+                      )}
+                      {onboardingStep === 2 && (
+                        <button
+                          className="button secondary"
+                          disabled={onboardingLoading}
+                          onClick={() => void checkOnboarding()}
+                        >
+                          {onboardingLoading
+                            ? "Checking setup…"
+                            : "Recheck setup"}
+                        </button>
+                      )}
+                      <button
+                        className="button subtle"
+                        onClick={() =>
+                          navigate(
+                            has("investigations:run")
+                              ? "investigations"
+                              : "reviews",
+                          )
+                        }
+                      >
+                        Open workspace
+                      </button>
+                    </div>
+                  </>
+                )}
+              </article>
+            </section>
           )}
           {view === "investigations" && (
             <>

@@ -1,10 +1,10 @@
 # Master specification implementation status
 
-Increment sections retain the evidence and gaps recorded when each increment shipped; the final operational-queue section records the latest delivery.
+Increment sections retain the evidence and gaps recorded when each increment shipped; the final guided-onboarding section records the latest delivery.
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 379-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 392-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
@@ -19,7 +19,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 | 12–13: SOC/evidence | Literal-query synthetic telemetry, source-attributed evidence/reports, assignment/escalation, single-source incident lifecycle and evidence-linked note history | Full OCSF model, triage, hunting, intelligence, detections, full incident lifecycle and evidence governance |
 | 14–16: policy/security/privacy | Independent read-only authorization, synthetic tenant isolation, JWT verification option, manifest/result checks | Live sensitive-executor integration, real multi-tenant identity, production TLS/RLS, privacy/retention/residency controls and formal security review |
 | 17–18: reliability/storage | SQLAlchemy/PostgreSQL, migrations, audit, deadlines, invocation/model usage bounds | Distributed observability, operational alerts, performance/recovery evidence, secure production storage |
-| 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, Next.js workbench using real APIs, evidence citations, review/response queues and connector status | Remaining SOC modules, OIDC redirect login/first-run wizard, broad labeled scenarios and complete CLI surface |
+| 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, Next.js workbench using real APIs, evidence citations, review/response queues, connector status and guided synthetic onboarding | Remaining SOC modules, OIDC redirect login and account/provider/connector provisioning, broad labeled scenarios and complete CLI surface |
 | 23–24: repository/docs | Modular source/tests, exact specification, agent guidance, progress/threat/readiness records | Ongoing documentation verification as implementation expands |
 | 25–27: tests/CI | Core, transport, OIDC fixture, storage/migration and real end-to-end tests; CI workflow prepared | Full A–J acceptance, AI evaluations, complete security/supply-chain scans, remote CI evidence |
 | 28–31: deployment/roadmap/readiness | Digest-pinned development PostgreSQL service, isolated database runner, explicit production no-go | Backend deployment validation, secure enterprise operations and most later roadmap phases |
@@ -56,7 +56,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 379-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 392-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
 
@@ -98,3 +98,12 @@ GET `/cases/history` and `/incidents/history` add creation-ordered page envelope
 The workbench starts each queue with 50 records, appends older pages without duplicate IDs and fences delayed pages across Refresh and session changes. Counts cover loaded records. The complete PostgreSQL/SQLite suite passed **379 tests in 120.761 seconds with zero skips**, including 18 queue storage and four queue API cases. **Eight Chromium checks passed in 53.342 seconds**, including 55 tied-time records in each operational queue, unique coverage, delayed-page refresh protection and mobile overflow checks. Build/typecheck, isolated installed-wheel two-page queue APIs and migration7 passed; desktop/mobile rendering was inspected.
 
 Paging preserves position rather than freezing live state or permissions; newly visible records before a marker require Refresh. Review/response queues remain bounded. Server-side queue search, unlink/merge governance and large-queue/remote-database performance remain incomplete. This advances the requested workbench and incident-management scope; production and live privileged response remain disabled. See [the queue guide](tutorials/queues.md).
+
+
+## Guided onboarding increment
+
+Master specification §20.2 / Phase 10 now has a Getting started flow: Welcome, current setup validation and a first synthetic PowerShell investigation through the existing form. Authenticated GET `/onboarding/status` reports safe configured modes/policy, actual schema readiness and currently permitted connector health. Current grants, tenant, allowlist and definition integrity govern probes; disabled sources are skipped. Failed/pending checks clear prior readiness. The guide performs no model inference, event search, credential provisioning or settings mutation. Investigation submission independently reauthorizes using the existing workflow.
+
+The full PostgreSQL/SQLite suite passed **392 tests in 128.362 seconds with zero skips**, including 11 SQLite onboarding checks, one PostgreSQL observation/revocation check and a new signed-token role/admin-mapping test. **Nine Chromium checks passed in 59.679 seconds**: actual guided collection/citations, unchanged connector configuration, degraded/failed rechecks, late results across navigation/sign-out, and mobile/session checks. Production static build/typecheck, installed-wheel onboarding API/assets/auth/migration7, all 42 pins and pip check passed. Desktop/mobile layouts were inspected. No schema or dependency changes were required.
+
+This is partial first-run delivery: account/provider/connector/MCP provisioning, security-policy editing and OIDC redirect login remain incomplete. Setup does not verify a live IdP, inference, provider billing, deployment or recovery. Administrator presence describes trusted configuration rather than a tested admin login. Readiness is a current observation rather than future authority. Production remains disabled. See [guided onboarding](tutorials/onboarding.md).

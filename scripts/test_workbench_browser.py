@@ -216,6 +216,128 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.get_by_role('region',name='Investigation report').count(),0)
         self.assertEqual(self.policy_errors,[])
 
+    def test_onboarding_guided_investigation_and_fresh_readiness(self):
+        auth={'Authorization':'Bearer '+self.analyst}
+        registered=self.http.get('/connectors',headers=auth).json()
+        self.login(self.analyst)
+        pattern='**/onboarding/status'
+        def enter():
+            with self.page.expect_response(lambda response:response.url.endswith('/onboarding/status')) as event:
+                self.navigate('Getting started')
+            self.assertEqual(event.value.status,200)
+            return event.value.json()
+        status=enter()
+        self.assertEqual(status['mode'],'demo')
+        self.assertTrue(status['synthetic'])
+        self.assertFalse(status['production_enabled'])
+        self.assertTrue(status['ready_for_investigation'])
+        self.assertEqual(status['database']['status'],'ready')
+        self.assertEqual(status['reasoning'],{'mode':'fixture','health_checked':False})
+        self.assertTrue(status['policy']['review_required'])
+        self.assertEqual(status['policy']['response_mode'],'simulation_only')
+        self.assertTrue(any(item['health']=='healthy' for item in status['connectors']))
+        self.page.get_by_role('button',name='Continue to validation',exact=True).click()
+        for item in status['connectors']:
+            expect(self.page.get_by_test_id('onboarding-connector-'+item['connector_id'])).to_contain_text(item['connector_id'])
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-onboarding.png'),full_page=True)
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'))
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-onboarding-mobile.png'),full_page=True)
+        self.page.set_viewport_size({'width':1440,'height':1000})
+        self.page.get_by_role('button',name='Continue to first investigation',exact=True).click()
+        launch=self.page.get_by_role('button',name='Start guided investigation',exact=True)
+        expect(launch).to_be_enabled()
+        launch.click()
+        dialog=self.page.get_by_role('dialog',name='Start an investigation')
+        expect(dialog.get_by_label('Investigation query',exact=True)).to_have_value('PowerShell')
+        with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/investigations')) as event:
+            dialog.get_by_role('button',name='Investigate',exact=True).click()
+        self.assertEqual(event.value.status,201)
+        report=event.value.json()
+        expect(self.page.get_by_role('region',name='Investigation report')).to_be_visible()
+        expect(self.page.get_by_text('Suspicious PowerShell encoded command on demo-host-1',exact=True)).to_be_visible()
+        self.page.get_by_role('button',name='Evidence 1',exact=True).first.click()
+        expect(self.page.get_by_test_id('evidence-'+report['report']['evidence'][0]['evidence_id'])).to_have_class(re.compile('highlight'))
+        # Validation and launch use the existing configuration and investigation path.
+        self.assertEqual(self.http.get('/connectors',headers=auth).json(),registered)
+        enter()
+        self.page.get_by_role('button',name='First investigation',exact=True).click()
+        expect(launch).to_be_enabled()
+        degraded={**status,'ready_for_investigation':False,
+            'connectors':[{**item,'health':'unhealthy'} for item in status['connectors']]}
+        def unavailable(route): route.fulfill(status=200,json=degraded)
+        self.page.route(pattern,unavailable)
+        with self.page.expect_response(lambda response:response.url.endswith('/onboarding/status')):
+            self.page.get_by_role('button',name='Recheck setup',exact=True).click()
+        expect(launch).to_be_disabled()
+        self.page.unroute(pattern,unavailable)
+        # A failed recheck must invalidate the previous successful readiness result.
+        def failed(route): route.fulfill(status=503,json={'error':'onboarding_unavailable'})
+        self.page.route(pattern,failed)
+        self.page.get_by_role('button',name='Recheck setup',exact=True).click()
+        expect(self.page.get_by_role('alert')).to_be_visible()
+        expect(launch).to_be_disabled()
+        self.page.unroute(pattern,failed)
+        # An older status response cannot overwrite a newer visit to the wizard.
+        # Simulate a response transport that cannot be canceled, so these races
+        # exercise the version/session fences as well as the normal abort path.
+        self.page.evaluate('''() => {
+            const original=window.fetch;
+            window.__restoreOnboardingFetch=() => { window.fetch=original; delete window.__restoreOnboardingFetch; };
+            window.fetch=(input,options={}) => original.call(window,input,
+                typeof input==='string' && input.endsWith('/onboarding/status')
+                    ? {...options,signal:undefined} : options);
+        }''')
+        held=[]
+        def hold_once(route):
+            if not held:
+                item={'route':route,'response':None}
+                held.append(item)
+                item['response']=route.fetch()
+            else: route.continue_()
+        def wait_held():
+            expect(self.page.get_by_role('button',name='Checking setup…',exact=True)).to_be_visible()
+            deadline=time.monotonic()+12
+            while not held or held[0]['response'] is None:
+                self.assertLess(time.monotonic(),deadline,'Setup request was not intercepted and fetched')
+                self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+            self.assertEqual(len(held),1)
+        self.page.route(pattern,hold_once)
+        self.page.get_by_role('button',name='Recheck setup',exact=True).click()
+        wait_held()
+        self.navigate('Investigations')
+        enter()
+        self.assertEqual(len(held),1)
+        stale={**degraded,'database':{'status':'unavailable','schema_revision':'stale-navigation-marker'}}
+        held[0]['route'].fulfill(response=held[0]['response'],json=stale)
+        self.page.unroute(pattern,hold_once)
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        self.page.get_by_role('button',name='First investigation',exact=True).click()
+        expect(launch).to_be_enabled()
+        expect(self.page.get_by_text('stale-navigation-marker',exact=True)).not_to_be_visible()
+        # The same fence applies when a previous session finishes after a new login.
+        held.clear()
+        self.page.route(pattern,hold_once)
+        self.page.get_by_role('button',name='Recheck setup',exact=True).click()
+        wait_held()
+        self.logout()
+        self.login(self.reviewer)
+        enter()
+        self.assertEqual(len(held),1)
+        held[0]['route'].fulfill(response=held[0]['response'],json=stale)
+        self.page.unroute(pattern,hold_once)
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        self.page.get_by_role('button',name='First investigation',exact=True).click()
+        expect(launch).to_be_enabled()
+        expect(self.page.get_by_text('stale-navigation-marker',exact=True)).not_to_be_visible()
+        self.page.evaluate('() => window.__restoreOnboardingFetch()')
+        self.assertEqual(self.page.evaluate('localStorage.length'),0)
+        self.assertEqual(self.page.evaluate('sessionStorage.length'),0)
+        self.assertEqual(self.context.cookies(),[])
+        self.page.get_by_role('button',name='Open workspace',exact=True).click()
+        expect(self.page.get_by_test_id('case-row-'+report['id'])).to_be_visible()
+        self.assertEqual(self.policy_errors,[])
+
     def test_case_assignment_escalation_and_stale_edit(self):
         auth={'Authorization':'Bearer '+self.analyst}
         manager={'Authorization':'Bearer '+self.reviewer}

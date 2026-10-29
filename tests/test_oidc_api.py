@@ -212,6 +212,26 @@ class OIDCAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(closed.status_code,200,closed.text)
             self.assertEqual(closed.json()['closed_by'],'admin-sub')
 
+    async def test_onboarding_uses_trusted_admin_mapping_and_signed_role_grants(self):
+        from dataclasses import replace
+        settings=replace(self.settings,oidc_subject_roles=(('analyst-sub','analyst'),('reviewer-sub','reviewer')))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            response=await client.get('/onboarding/status',headers=self.headers('reviewer-sub',roles=['admin'],permissions=['investigations:run']))
+            self.assertEqual(response.status_code,200,response.text)
+            data=response.json()
+            self.assertEqual(data['authentication'],{'mode':'oidc','administrator_configured':False})
+            self.assertFalse(data['can_investigate'])
+            self.assertFalse(data['ready_for_investigation'])
+            self.assertNotIn('reviewer-sub',response.text)
+            self.assertNotIn(self.config.issuer,response.text)
+            self.assertEqual((await client.get('/onboarding/status',headers=self.headers('unmapped',roles=['admin']))).status_code,403)
+            analyst=(await client.get('/onboarding/status',headers=self.headers('analyst-sub'))).json()
+            self.assertTrue(analyst['ready_for_investigation'])
+            self.assertFalse(analyst['authentication']['administrator_configured'])
+        original=await self.client.get('/onboarding/status',headers=self.headers())
+        self.assertTrue(original.json()['authentication']['administrator_configured'])
+
     async def test_combined_incident_requires_every_source_scope_under_oidc(self):
         from dataclasses import replace
         settings=replace(self.settings,oidc_subject_roles=self.settings.oidc_subject_roles+(('reviewer-sub','reviewer'),))

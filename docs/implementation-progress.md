@@ -1,6 +1,6 @@
 # Implementation progress
 
-Increment sections retain the evidence and gaps recorded when each increment shipped; the final operational-queue section records the latest delivery.
+Increment sections retain the evidence and gaps recorded when each increment shipped; the final guided-onboarding section records the latest delivery.
 
 The synthetic vertical slice and PostgreSQL store are `integration_tested`; the OIDC verifier/API adapter is `fixture_tested` with actual signatures and mocked HTTPS. The broader phases remain partial. Production mode is disabled.
 
@@ -19,7 +19,7 @@ Initial discovery found an unborn checkout. Read-only Git checks failed inside t
 
 ## Verification record
 
-`.venv/bin/python scripts/test_postgres.py` completed **379 tests in 120.761 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, 13 OIDC API, 24 core, four real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration, four workflow API, 24 model gateway, 21 model storage, 13 grounding/reasoning, six model API, 25 review storage/migration and 13 review policy/API tests, 22 workbench storage cases, ten workbench API/static cases, 21 case storage/migration, ten case policy/API, 29 incident storage/migration, six incident API, 25 multi-source storage/migration, five link API, 18 operational-queue storage and four queue API tests.
+`.venv/bin/python scripts/test_postgres.py` completed **392 tests in 128.362 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, 14 OIDC API, 24 core, four real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration, four workflow API, 24 model gateway, 21 model storage, 13 grounding/reasoning, six model API, 25 review storage/migration and 13 review policy/API tests, 22 workbench storage cases, ten workbench API/static cases, 21 case storage/migration, ten case policy/API, 29 incident storage/migration, six incident API, 25 multi-source storage/migration, five link API, 18 operational-queue storage, four queue API and 12 onboarding tests.
 
 Migration `0002_workflows` adds owner-scoped idempotency and atomic 100-pending-workflow admission, checkpoint/revision/lease fencing, manual resume/cancel/state APIs and persisted invocation/deadline budgets. Four end-to-end tests terminate a real worker with `os._exit` after checkpoint commit, restart the API and resume after lease expiry on SQLite and PostgreSQL. Evidence remained stable and no second REST search occurred.
 
@@ -83,3 +83,12 @@ GET `/cases/history` and `/incidents/history` add creation-ordered page envelope
 The workbench starts each queue with 50 records, appends older pages without duplicate IDs and fences delayed pages across Refresh and session changes. Counts cover loaded records. The complete PostgreSQL/SQLite suite passed **379 tests in 120.761 seconds with zero skips**, including 18 queue storage and four queue API cases. **Eight Chromium checks passed in 53.342 seconds**, including 55 tied-time records in each operational queue, unique coverage, delayed-page refresh protection and mobile overflow checks. Build/typecheck, isolated installed-wheel two-page queue APIs and migration7 passed; desktop/mobile rendering was inspected.
 
 Paging preserves position rather than freezing live state or permissions; newly visible records before a marker require Refresh. Review/response queues remain bounded. Server-side queue search, unlink/merge governance and large-queue/remote-database performance remain incomplete. This advances the requested workbench and incident-management scope; production and live privileged response remain disabled. See [the queue guide](tutorials/queues.md).
+
+
+## Guided onboarding increment
+
+Master specification §20.2 / Phase 10 now has a Getting started flow: Welcome, current setup validation and a first synthetic PowerShell investigation through the existing form. Authenticated GET `/onboarding/status` reports safe configured modes/policy, actual schema readiness and currently permitted connector health. Current grants, tenant, allowlist and definition integrity govern probes; disabled sources are skipped. Failed/pending checks clear prior readiness. The guide performs no model inference, event search, credential provisioning or settings mutation. Investigation submission independently reauthorizes using the existing workflow.
+
+The full PostgreSQL/SQLite suite passed **392 tests in 128.362 seconds with zero skips**, including 11 SQLite onboarding checks, one PostgreSQL observation/revocation check and a new signed-token role/admin-mapping test. **Nine Chromium checks passed in 59.679 seconds**: actual guided collection/citations, unchanged connector configuration, degraded/failed rechecks, late results across navigation/sign-out, and mobile/session checks. Production static build/typecheck, installed-wheel onboarding API/assets/auth/migration7, all 42 pins and pip check passed. Desktop/mobile layouts were inspected. No schema or dependency changes were required.
+
+This is partial first-run delivery: account/provider/connector/MCP provisioning, security-policy editing and OIDC redirect login remain incomplete. Setup does not verify a live IdP, inference, provider billing, deployment or recovery. Administrator presence describes trusted configuration rather than a tested admin login. Readiness is a current observation rather than future authority. Production remains disabled. See [guided onboarding](tutorials/onboarding.md).
