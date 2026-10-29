@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from .contracts import ExecutionContext, Work4ceError, digest
 from .gateway import Gateway
 from .storage import Store, now
+from .reasoning import Reasoner
 
 
 class Evidence(BaseModel):
@@ -38,12 +39,15 @@ class Checkpoint(BaseModel):
 
 
 class Investigator:
-    def __init__(self, gateway: Gateway, store: Store, *, max_tool_calls: int = 2, duration_seconds: float = 120):
+    def __init__(self, gateway: Gateway, store: Store, *, max_tool_calls: int = 2, duration_seconds: float = 120, reasoner: Reasoner | None = None):
         if type(max_tool_calls) is not int or not 1 <= max_tool_calls <= 8:
             raise ValueError("Tool-call budget must be 1..8")
         if type(duration_seconds) not in (int, float) or not .01 <= duration_seconds <= 600:
             raise ValueError("Investigation deadline must be .01..600 seconds")
         self.gateway, self.store = gateway, store
+        if reasoner is not None and reasoner.store is not store:
+            raise ValueError("Reasoning and investigations must use the same scoped store")
+        self.reasoner = reasoner
         self.max_tool_calls, self.duration_seconds = max_tool_calls, duration_seconds
 
     def _authorize(self, context: ExecutionContext) -> None:
@@ -59,7 +63,8 @@ class Investigator:
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
             raise Work4ceError("invalid_idempotency_key", 422)
         return self.store.create_workflow(context.tenant_id, context.subject, query, limit, key,
-                                          max_tool_calls=self.max_tool_calls, duration_seconds=self.duration_seconds)
+                                          max_tool_calls=self.max_tool_calls, duration_seconds=self.duration_seconds,
+                                          reasoning_config_hash=self.reasoner.config_hash if self.reasoner else None)
 
     async def investigate(self, context: ExecutionContext, query: str, limit: int = 20, *, idempotency_key: str | None = None) -> dict[str, Any]:
         state = self.enqueue(context, query, limit, idempotency_key=idempotency_key)
@@ -90,6 +95,8 @@ class Investigator:
     async def resume(self, context: ExecutionContext, identity: str) -> dict[str, Any]:
         self._authorize(context)
         state = self.store.get_workflow(context.tenant_id, context.subject, identity)
+        if state["reasoning_config_hash"] != (self.reasoner.config_hash if self.reasoner else None):
+            raise Work4ceError("model_configuration_changed", 409)
         if state["state"] == "completed":
             if state["checkpoint"] is None:
                 raise Work4ceError("checkpoint_integrity_failure", 500)
@@ -104,8 +111,13 @@ class Investigator:
             async with asyncio.timeout(max(0, min(remaining, 25))):
                 checkpoint = state["checkpoint"]
                 if checkpoint is None:
-                    resolved = await self.gateway.execute(context, "security.events.search",
-                        {"query": state["query"], "limit": state["limit"]},
+                    capability_id, version = "security.events.search", "1.0"
+                    arguments = {"query":state["query"], "limit":state["limit"]}
+                    if self.reasoner is not None:
+                        plan = await self.reasoner.plan(context, identity, worker, state["query"], state["limit"],
+                                                        self.gateway.capabilities(context))
+                        capability_id, version, arguments = plan["capability_id"], plan["version"], plan["arguments"]
+                    resolved = await self.gateway.execute(context, capability_id, arguments, version,
                         before_invoke=lambda: self.store.reserve_tool_call(context.tenant_id, context.subject, identity, worker))
                     evidence = [Evidence(evidence_id=str(uuid4()), tenant_id=context.tenant_id,
                         source_event_id=event["id"], connector_id=resolved["connector_id"], protocol=resolved["protocol"],
@@ -124,6 +136,20 @@ class Investigator:
                     "findings": findings, "assessment": "needs_analyst_review" if evidence else "inconclusive",
                     "limitations": ["Synthetic telemetry only; no live vendor or AI model invoked.",
                         "Missing telemetry cannot establish absence of compromise."]}
+                if self.reasoner is not None:
+                    assessment = await self.reasoner.assess(context, identity, worker, evidence)
+                    report["engine"] = ("structured-fixture-v1" if self.reasoner.gateway.is_synthetic
+                                        else "structured-model-v1")
+                    report["assessment"] = assessment["assessment"]
+                    report["findings"] = [{"finding_id":str(uuid5(NAMESPACE_URL, identity + ":" + item["evidence_id"])),
+                        "statement":"Observed synthetic telemetry: " + item["quote"],
+                        "evidence_ids":[item["evidence_id"]]} for item in assessment["observations"]]
+                    report["reasoning"] = self.reasoner.metadata(context, identity)
+                    report["limitations"] = ["Synthetic telemetry and model-assisted quotations require analyst review.",
+                        "Model output does not establish malicious intent or authorize a response.",
+                        "Provider usage and configured prices are not independently verified billing."]
+                    if report["reasoning"]["synthetic_fixture"]:
+                        report["limitations"].append("The model provider is a deterministic offline fixture; no LLM was invoked.")
                 self.store.finish_workflow(context.tenant_id, context.subject, identity, worker, report, "completed")
                 return self.store.get(context.tenant_id, identity)
         except asyncio.CancelledError:

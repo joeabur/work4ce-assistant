@@ -19,6 +19,8 @@ from .contracts import CapabilityManifest, ConnectorManifest, ExecutionContext, 
 from .fixtures import SEARCH_CAPABILITY
 from .gateway import Gateway
 from .investigation import Investigator
+from .models import FixtureProvider, OpenAICompatibleProvider, ModelGateway
+from .reasoning import Reasoner
 from .storage import Store
 
 TENANT = "synthetic-demo"
@@ -38,6 +40,16 @@ class Settings:
     oidc_subject_roles: tuple[tuple[str, str], ...] = ()
     workflow_max_tool_calls: int = 2
     workflow_duration_seconds: float = 120
+    reasoning_mode: str = "deterministic"
+    model_endpoint: str = ""
+    model_name: str = ""
+    model_api_key: str = field(default="", repr=False)
+    model_allow_synthetic_egress: bool = False
+    model_input_price: int | None = None
+    model_output_price: int | None = None
+    max_model_calls: int = 4
+    max_model_tokens: int = 36_000
+    max_model_cost_microusd: int = 1_000_000
 
     def __post_init__(self):
         if self.mode != "demo":
@@ -46,6 +58,34 @@ class Settings:
                 or type(self.workflow_duration_seconds) not in (int, float)
                 or not .01 <= self.workflow_duration_seconds <= 600):
             raise ValueError("Workflow budgets require 1..8 tool calls and .01..600 seconds")
+        if self.reasoning_mode not in {"deterministic", "fixture", "provider"}:
+            raise ValueError("WORK4CE_REASONING_MODE must be deterministic, fixture or provider")
+        if (type(self.max_model_calls) is not int or not 1 <= self.max_model_calls <= 8
+                or type(self.max_model_tokens) is not int or not 1 <= self.max_model_tokens <= 262144
+                or type(self.max_model_cost_microusd) is not int or not 0 <= self.max_model_cost_microusd <= 1_000_000_000):
+            raise ValueError("Invalid model call/token/cost budgets")
+        if self.reasoning_mode == "provider":
+            if self.model_allow_synthetic_egress is not True:
+                raise ValueError("Provider mode requires explicit WORK4CE_MODEL_ALLOW_SYNTHETIC_EGRESS=true")
+            # Validate trusted route without opening a client or disclosing credentials.
+            from urllib.parse import urlsplit
+            if any(not isinstance(value, str) for value in (self.model_endpoint,self.model_name,self.model_api_key)):
+                raise ValueError("Model endpoint, name and credential must be strings")
+            url = urlsplit(self.model_endpoint)
+            if (url.scheme != "https" or not url.hostname or url.username is not None or url.password is not None
+                    or url.query or url.fragment or "?" in self.model_endpoint or "#" in self.model_endpoint
+                    or "\\" in self.model_endpoint or not self.model_endpoint.isascii()
+                    or any(c.isspace() for c in self.model_endpoint)
+                    or not url.path.endswith("/chat/completions")):
+                raise ValueError("Configure an explicit trusted HTTPS chat completions endpoint")
+            _ = url.port
+            if (not self.model_api_key or not self.model_api_key.isascii()
+                    or any(ord(c) <= 32 or ord(c) == 127 for c in self.model_api_key)
+                    or not self.model_name or len(self.model_name) > 200 or not self.model_name.isascii()
+                    or any(ord(c) < 32 or ord(c) == 127 for c in self.model_name)):
+                raise ValueError("Provider mode requires valid WORK4CE_MODEL_NAME and WORK4CE_MODEL_API_KEY")
+            if any(type(p) is not int or not 0 <= p <= 1_000_000_000_000 for p in (self.model_input_price,self.model_output_price)):
+                raise ValueError("Provider mode requires explicit input/output prices in microUSD per million tokens")
         if self.auth_mode not in {"demo", "oidc"}:
             raise ValueError("WORK4CE_AUTH_MODE must be demo or oidc")
         if self.auth_mode == "demo" and (len(self.demo_token) < 32 or len(self.admin_token) < 32
@@ -96,7 +136,17 @@ class Settings:
                    mode=os.environ.get("WORK4CE_MODE", "demo"),
                    auth_mode=auth_mode, oidc_config=config, oidc_subject_roles=roles,
                    workflow_max_tool_calls=int(os.environ.get("WORK4CE_MAX_TOOL_CALLS", "2")),
-                   workflow_duration_seconds=float(os.environ.get("WORK4CE_INVESTIGATION_TIMEOUT_SECONDS", "120")))
+                   workflow_duration_seconds=float(os.environ.get("WORK4CE_INVESTIGATION_TIMEOUT_SECONDS", "120")),
+                   reasoning_mode=os.environ.get("WORK4CE_REASONING_MODE", "deterministic"),
+                   model_endpoint=os.environ.get("WORK4CE_MODEL_ENDPOINT", ""),
+                   model_name=os.environ.get("WORK4CE_MODEL_NAME", ""),
+                   model_api_key=os.environ.get("WORK4CE_MODEL_API_KEY", ""),
+                   model_allow_synthetic_egress=os.environ.get("WORK4CE_MODEL_ALLOW_SYNTHETIC_EGRESS", "false") == "true",
+                   model_input_price=int(os.environ["WORK4CE_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION"]) if "WORK4CE_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION" in os.environ else None,
+                   model_output_price=int(os.environ["WORK4CE_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION"]) if "WORK4CE_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION" in os.environ else None,
+                   max_model_calls=int(os.environ.get("WORK4CE_MAX_MODEL_CALLS", "4")),
+                   max_model_tokens=int(os.environ.get("WORK4CE_MAX_MODEL_TOKENS", "36000")),
+                   max_model_cost_microusd=int(os.environ.get("WORK4CE_MAX_MODEL_COST_MICROUSD", "1000000")))
 
 
 class BodyLimit:
@@ -137,12 +187,25 @@ class InvestigationRequest(BaseModel):
     defer: bool = False
 
 
-def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None) -> FastAPI:
+def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None, reasoner: Reasoner | None = None) -> FastAPI:
     own_store = gateway is None
     store = gateway.store if gateway else Store(settings.database)
     gateway = gateway or Gateway(store)
-    investigator = Investigator(gateway, store, max_tool_calls=settings.workflow_max_tool_calls,
-                                duration_seconds=settings.workflow_duration_seconds)
+    try:
+        own_reasoner = settings.reasoning_mode != "deterministic" and reasoner is None
+        if own_reasoner:
+            provider = FixtureProvider() if settings.reasoning_mode == "fixture" else OpenAICompatibleProvider(
+                settings.model_endpoint, settings.model_name, settings.model_api_key,
+                input_price_microusd_per_million=settings.model_input_price,
+                output_price_microusd_per_million=settings.model_output_price)
+            reasoner = Reasoner(ModelGateway(provider), store, max_calls=settings.max_model_calls,
+                                max_tokens=settings.max_model_tokens,max_cost_microusd=settings.max_model_cost_microusd)
+        investigator = Investigator(gateway, store, max_tool_calls=settings.workflow_max_tool_calls,
+                                    duration_seconds=settings.workflow_duration_seconds, reasoner=reasoner)
+    except Exception:
+        if own_store:
+            store.close()
+        raise
     slots = asyncio.Semaphore(4)
     own_verifier = settings.auth_mode == "oidc" and verifier is None
     if own_verifier:
@@ -167,10 +230,16 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
                     raise RuntimeError("No demo connector could be verified")
             yield
         finally:
-            if own_verifier and verifier is not None:
-                await verifier.close()
-            if own_store:
-                store.close()
+            try:
+                if own_verifier and verifier is not None:
+                    await verifier.close()
+            finally:
+                try:
+                    if own_reasoner and reasoner is not None:
+                        await reasoner.close()
+                finally:
+                    if own_store:
+                        store.close()
 
     app = FastAPI(title="Work4ce Assistant", version="0.1.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
@@ -275,9 +344,12 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
         if "investigations:read" not in ctx.permissions:
             raise Work4ceError("permission_denied", 403)
         state = store.get_workflow(ctx.tenant_id, ctx.subject, identity)
-        return {"id": state["id"], "status": state["state"], "checkpointed": state["checkpoint"] is not None,
-                "tool_calls": state["tool_calls"], "max_tool_calls": state["max_tool_calls"],
-                "deadline": state["deadline"]}
+        response = {"id": state["id"], "status": state["state"], "checkpointed": state["checkpoint"] is not None,
+                    "tool_calls": state["tool_calls"], "max_tool_calls": state["max_tool_calls"],
+                    "deadline": state["deadline"]}
+        if state["reasoning_config_hash"] is not None:
+            response["model_usage"] = store.model_usage(ctx.tenant_id, ctx.subject, identity)
+        return response
 
     @app.get("/investigations/{identity}")
     async def report(identity: str, ctx: Context):

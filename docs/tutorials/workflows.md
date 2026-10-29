@@ -46,11 +46,11 @@ Configure these through trusted environment settings. Request bodies cannot over
 
 Four API execution slots guard immediate execution, resume and deferred admission. At most 100 nonterminal workflows may exist per tenant/subject; admission is atomic across store instances. Terminal workflow and audit retention are unbounded, and request-rate controls remain future work.
 
-Migration head is `0002_workflows`. SQLite auto-upgrades and preserves known legacy data; PostgreSQL needs `python -m work4ce_assistant database migrate` before startup. Back up useful data before upgrading.
+Migration head is `0003_models`. SQLite auto-upgrades and preserves known legacy data; PostgreSQL needs `python -m work4ce_assistant database migrate` before startup. Back up useful data before upgrading.
 
-This is a deterministic read/report workflow. Human review checkpoints, multi-step partial-result reconciliation, AI planning, token/cost budgets, distributed scheduling and production response approvals are incomplete. Synchronous storage may block the event loop. See `docs/prompt-status.md` and the release-readiness report for scope and verified evidence.
+The default read/report workflow is deterministic; optional structured model assistance and persistent usage accounting are described in the model guide. Human review, multi-step reconciliation, general AI reasoning, tokenizer/billing assurance, distributed scheduling and response approvals remain incomplete. Synchronous storage may block the event loop. See `docs/prompt-status.md` and the release-readiness report for scope and verified evidence.
 
 
 ## Executed recovery evidence
 
-The full PostgreSQL/SQLite suite passed 120 tests in 39.650 seconds with zero skips. Two actual API/worker end-to-end tests terminate a worker using `os._exit` after checkpoint commit, restart the API and manually resume after lease expiry. Both databases retained stable evidence and issued no second REST search. This tests recovery at the implemented read boundary, not automatic scheduling or every possible failure point.
+The full PostgreSQL/SQLite suite passed 186 tests in 62.892 seconds with zero skips. Four actual API/worker end-to-end tests terminate a worker using `os._exit` after checkpoint commit, restart the API and manually resume after lease expiry. Both databases retained stable evidence and issued no second REST search. This tests recovery at the implemented read boundary, not automatic scheduling or every possible failure point.

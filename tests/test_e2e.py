@@ -29,12 +29,35 @@ class VerticalSliceTests(unittest.TestCase):
         migrate(database)
         self.run_workflow(database)
 
-    def run_workflow(self, database=None):
+    def test_fixture_models_use_real_tools_and_survive_crash(self):
+        self.run_workflow(reasoning_mode='fixture')
+
+    @unittest.skipUnless(os.environ.get('WORK4CE_TEST_POSTGRES_URL'), 'PostgreSQL model integration requires WORK4CE_TEST_POSTGRES_URL')
+    def test_postgres_fixture_models_use_real_tools_and_survive_crash(self):
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.engine import make_url
+        from uuid import uuid4
+        from work4ce_assistant.storage import migrate
+        url=make_url(os.environ['WORK4CE_TEST_POSTGRES_URL'])
+        engine=create_engine(url,hide_parameters=True)
+        schema='model_e2e_'+uuid4().hex
+        try:
+            with engine.begin() as connection:
+                connection.execute(text('CREATE SCHEMA '+schema))
+            database=url.update_query_dict({'options':'-csearch_path='+schema}).render_as_string(hide_password=False)
+            migrate(database)
+            self.run_workflow(database,reasoning_mode='fixture')
+        finally:
+            with engine.begin() as connection:
+                connection.execute(text('DROP SCHEMA '+schema+' CASCADE'))
+            engine.dispose()
+
+    def run_workflow(self, database=None, *, reasoning_mode='deterministic'):
         with tempfile.TemporaryDirectory() as directory:
             rest_port, api_port = free_port(), free_port()
             analyst, admin = secrets.token_urlsafe(40), secrets.token_urlsafe(40)
             env = {**os.environ, 'WORK4CE_DEMO_TOKEN':analyst, 'WORK4CE_ADMIN_TOKEN':admin,
-                   'WORK4CE_AUTH_MODE':'demo', 'WORK4CE_MODE':'demo', 'WORK4CE_DB':database or str(Path(directory)/'demo.db'), 'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}'}
+                   'WORK4CE_REASONING_MODE':reasoning_mode, 'WORK4CE_AUTH_MODE':'demo', 'WORK4CE_MODE':'demo', 'WORK4CE_DB':database or str(Path(directory)/'demo.db'), 'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}'}
             log = open(Path(directory)/'services.log', 'w+')
             rest = subprocess.Popen([sys.executable,'-m','work4ce_assistant.reference_servers','rest','--port',str(rest_port)],
                                     env=env,stdout=log,stderr=log)
@@ -103,7 +126,12 @@ async def run():
     claim=store.claim_workflow
     store.claim_workflow=lambda *args,**kwargs: claim(*args,lease_seconds=2)
     store.finish_workflow=lambda *args,**kwargs: os._exit(73)
-    await Investigator(gateway,store).resume(ExecutionContext(TENANT,'demo-analyst',PERMISSIONS,CONNECTORS,True),
+    reasoner=None
+    if os.environ.get('WORK4CE_REASONING_MODE')=='fixture':
+        from work4ce_assistant.models import ModelGateway,FixtureProvider
+        from work4ce_assistant.reasoning import Reasoner
+        reasoner=Reasoner(ModelGateway(FixtureProvider()),store)
+    await Investigator(gateway,store,reasoner=reasoner).resume(ExecutionContext(TENANT,'demo-analyst',PERMISSIONS,CONNECTORS,True),
         os.environ['WORK4CE_TEST_WORKFLOW_ID'])
 asyncio.run(run())
 """
@@ -132,6 +160,12 @@ asyncio.run(run())
                 replay = client.post('/investigations',json={'query':'PowerShell'},headers=queued_headers)
                 self.assertEqual(replay.status_code,201,replay.text)
                 self.assertEqual(replay.json(),resumed.json())
+                if reasoning_mode=='fixture':
+                    self.assertEqual(resumed.json()['report']['engine'],'structured-fixture-v1')
+                    self.assertTrue(resumed.json()['report']['reasoning']['synthetic_fixture'])
+                    self.assertEqual(resumed.json()['report']['reasoning']['usage']['calls'],2)
+                    state=client.get('/investigations/'+workflow_id+'/state',headers=auth).json()
+                    self.assertEqual(state['model_usage']['calls'],2)
                 conflict = client.post('/investigations',json={'query':'different'},headers=queued_headers)
                 self.assertEqual(conflict.status_code,409)
                 cancel_job = client.post('/investigations',json={'query':'PowerShell','defer':True},

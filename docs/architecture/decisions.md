@@ -62,3 +62,10 @@ Persist workflow ownership, idempotency binding, deadlines, invocation reservati
 Checkpoint immediately after validating the read result, before report commit. Reuse saved evidence only after current source connector/manifest/permission authorization. Persist invocation budget before actual connector invocation, including fallback, so crashes cannot reset it. A pre-checkpoint interruption may repeat a read; there is no exactly-once claim and writes remain denied.
 
 Default deadline is 120 seconds from enqueue and default budget is two invocations. Explicit cancellation invalidates commit authority; it cannot guarantee termination of external I/O already in flight. Task interruption releases the lease when possible and preserves recoverable state; after abrupt worker exit, resume waits for lease expiry. Expose manual resume/cancel/state APIs; do not imply an automatic worker or general workflow scheduler exists.
+
+
+## ADR-009 — Constrained model assistance and durable usage
+
+Introduce a provider contract, an explicitly labelled offline fixture and a configured HTTPS structured chat-completions adapter. The default remains deterministic. A model may select the authorized literal search and exact evidence quotations; it cannot grant permissions, enlarge scope or introduce unsupported facts/verdicts. Backend policy and evidence validation remain authoritative.
+
+Fingerprint route, model, synthetic designation, prompt, schemas, prices and budgets without credential values. Persist reservations before every attempt, retain failed/unknown usage conservatively, and cache validated results by owner/workflow/stage/input/configuration. Migration 0003 preserves prior deterministic workflows. Provider mode requires explicit synthetic-egress consent; payload allowlisting and recognizable credential-pattern rejection are limited admission controls, not enterprise DLP. No cross-provider fallback or live billing guarantee is claimed.

@@ -29,3 +29,10 @@ Workflow idempotency and checkpoints are scoped by tenant/subject. Completed exe
 ## Review requirements before production
 
 Review current authoritative OWASP, NIST and protocol guidance using supported network-permitted tools. Complete dependency/advisory checks, security scanning, OIDC/TLS review, connector isolation, approval lifecycle tests, recovery drills, tenant-isolation testing and AI evaluation. Do not infer those checks from a successful demo.
+
+
+## Model assistance boundary
+
+Treat model outputs and telemetry as untrusted. The model can return only one existing search plan and exact evidence quotations; deterministic validators enforce original query scope, valid source IDs/hashes and allowed assessment combinations. Backend identity/authorization and integration policy remain independent. Outgoing fields are allowlisted, recognizable credential patterns are blocked, and explicit provider-mode consent plus trusted HTTPS configuration are required. These controls do not constitute enterprise DLP or privacy certification.
+
+Persistent reservations precede provider attempts. Failures, retries and unknown cancellation outcomes consume budget; result commits require a current workflow lease/deadline and reject cancelled work. Fingerprints bind route, synthetic designation, prompt/schema and operator prices/budgets without credentials. Cached outputs are owner/input/configuration-bound and revalidated. Remaining risks include provider-reported usage, incorrect configured prices, inference duplication before cache commit, process-local circuit state, limited prompt-injection evaluations and unverified live-provider behavior.

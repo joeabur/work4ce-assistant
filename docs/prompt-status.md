@@ -2,21 +2,21 @@
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a deterministic, synthetic, read-only investigation foundation. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 120-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 186-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
 | Master sections | Current delivery | Remaining material requirements |
 |---|---|---|
 | 0–3: identity and architecture | Working modular Python package, capability-oriented investigator, protocol-independent gateway | Full enterprise platform and broad integration categories remain roadmap scope |
-| 4–5: stack and boundaries | FastAPI/Pydantic/JSON Schema, SQLAlchemy/Alembic, official MCP SDK, trusted backend policy | LangGraph, frontend, enterprise identity/deployment/observability, provider-independent model runtime |
+| 4–5: stack and boundaries | FastAPI/Pydantic/JSON Schema, SQLAlchemy/Alembic, official MCP SDK, trusted backend policy | LangGraph, frontend, enterprise identity/deployment/observability, live model-runtime verification |
 | 6–8: integrations, registry and CDK | Typed connector/manifests, reviewed registration, compatible schemas, generic capability names, explicit tenant/connector grants, real reference adapters | Complete CDK packaging/signing, external plugin isolation, credential lifecycle, arbitrary production scopes/protocols |
 | 9: MCP | Official SDK local stdio client/server, reviewed tool discovery and poisoning checks | Remote OAuth, broader transport/protocol compatibility and production server administration |
-| 10: agent | Deterministic bounded collection/reporting workflow with durable read-boundary checkpoints | AI planning, hypothesis evaluation, autonomous correlation, human review and full specialist/runtime design |
-| 11: model gateway | No provider is connected | Routing, structured model outputs, cost/token accounting, provider retries, redaction and evaluations |
+| 10: agent | Deterministic bounded collection/reporting workflow with durable read-boundary checkpoints | General AI planning, hypothesis evaluation, autonomous correlation, human review and full specialist/runtime design |
+| 11: model gateway | Typed provider contract, offline fixture, configured HTTPS adapter, strict plans/quotations, retries/circuit, durable usage and cache | Live-provider verification, broader routing/health, tokenizer-aware admission, enterprise redaction and independent AI evaluations |
 | 12–13: SOC/evidence | Literal-query synthetic telemetry, normalized source-attributed evidence, hashes and stored reports | Full OCSF model, triage, hunting, intelligence, detections, incident lifecycle and evidence governance |
 | 14–16: policy/security/privacy | Independent read-only authorization, synthetic tenant isolation, JWT verification option, manifest/result checks | Sensitive execution approvals, real multi-tenant identity, production TLS/RLS, privacy/retention/residency controls and formal security review |
-| 17–18: reliability/cost | Audit, liveness/readiness, deadlines and tool-call bounds | Distributed observability, operational alerts, performance evidence, provider cost control |
+| 17–18: reliability/storage | SQLAlchemy/PostgreSQL, migrations, audit, deadlines, invocation/model usage bounds | Distributed observability, operational alerts, performance/recovery evidence, secure production storage |
 | 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, guided setup | Dashboard, browser login/first-run wizard, broad labeled scenarios and complete CLI surface |
 | 23–24: repository/docs | Modular source/tests, exact specification, agent guidance, progress/threat/readiness records | Ongoing documentation verification as implementation expands |
 | 25–27: tests/CI | Core, transport, OIDC fixture, storage/migration and real end-to-end tests; CI workflow prepared | Full A–J acceptance, AI evaluations, complete security/supply-chain scans, remote CI evidence |
@@ -42,11 +42,11 @@ The current product is a deterministic, synthetic, read-only investigation found
 
 | Requested limit | Current implementation and gap |
 |---|---|
-| Reasoning steps | No model reasoning loop exists; only the deterministic read/report stages. A general planning-step budget is unimplemented. |
+| Reasoning steps | Optional assistance performs one bounded search plan and one quotation assessment. A general multi-step reasoning loop is unimplemented. |
 | Tool calls | Default two actual invocations per workflow, persisted across retries, crashes and connector fallback. Constructor configuration supports one through eight; API clients cannot enlarge it. |
 | Investigation duration | Default 120 seconds persisted at enqueue, including waiting time; configurable backend range 0.01–600 seconds. No deadline reset on resume. |
-| Token expenditure | Unimplemented: no model provider/token use exists. |
-| Investigation cost | Unimplemented: no model price/cost gateway exists. |
+| Token expenditure | Conservative reservations and reported usage persist per attempt; independent tokenizer/provider accounting remains incomplete. |
+| Investigation cost | Configured-price reservations and calculated cost persist; live price catalogs and independent billing verification remain incomplete. |
 | Query scope | Strict literal query length and event-limit schemas; synthetic-events policy only. No arbitrary backend query language. |
 | Result size | Connector/gateway schema and byte bounds plus bounded checkpoint storage. |
 | Concurrent investigations | Four API execution slots; deferred enqueue also uses the admission guard. Database leases prevent concurrent workers completing the same workflow. This is not a fleet-wide concurrency scheduler. |
@@ -54,4 +54,6 @@ The current product is a deterministic, synthetic, read-only investigation found
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 120-test integration suite. This increment implements deterministic orchestration state, checkpoints, manual resume, idempotency, lease fencing, deadlines, persisted invocation budgets and explicit cancellation. It does not implement an AI planning runtime, model-provider gateway, human review checkpoints, general multi-step recovery, token/cost controls or distributed execution observability. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 186-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, human review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+
+The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.

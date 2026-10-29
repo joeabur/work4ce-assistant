@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import threading
 import math
+import re
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,14 +20,14 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import Column, Float, ForeignKey, Integer, MetaData, Table, Text, and_, create_engine, event, func, inspect, or_, select, text, update
+from sqlalchemy import Column, Float, ForeignKey, Integer, MetaData, Table, Text, and_, case, create_engine, event, func, inspect, or_, select, text, update
 from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 
 from .contracts import Work4ceError, canonical, digest
 
-HEAD = "0002_workflows"
+HEAD = "0003_models"
 metadata = MetaData()
 investigations = Table("investigations", metadata,
     Column("id", Text, primary_key=True), Column("tenant", Text, nullable=False),
@@ -52,7 +53,18 @@ workflow_state = Table("workflow_state", metadata,
     Column("max_tool_calls", Integer, nullable=False), Column("tool_calls", Integer, nullable=False),
     Column("deadline", Float, nullable=False), Column("checkpoint", Text), Column("checkpoint_hash", Text),
     Column("state", Text, nullable=False), Column("lease_owner", Text), Column("lease_until", Float),
-    Column("revision", Integer, nullable=False))
+    Column("revision", Integer, nullable=False), Column("reasoning_config_hash", Text),
+    Column("model_limits_hash", Text), Column("max_model_calls", Integer),
+    Column("max_model_tokens", Integer), Column("max_model_cost_microusd", Integer))
+model_attempts = Table("model_attempts", metadata,
+    Column("id", Text, primary_key=True), Column("workflow_id", Text, ForeignKey("workflow_state.id"), nullable=False),
+    Column("tenant", Text, nullable=False), Column("subject", Text, nullable=False),
+    Column("stage", Text, nullable=False), Column("input_hash", Text, nullable=False),
+    Column("config_hash", Text, nullable=False), Column("state", Text, nullable=False),
+    Column("result", Text), Column("result_hash", Text),
+    Column("reserved_tokens", Integer, nullable=False), Column("reserved_cost_microusd", Integer, nullable=False),
+    Column("actual_input_tokens", Integer), Column("actual_output_tokens", Integer),
+    Column("actual_cost_microusd", Integer), Column("error_code", Text), Column("completion_revision", Integer))
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -287,7 +299,8 @@ class Store:
             return self._load_workflow(connection, tenant, subject, identity)
 
     def create_workflow(self, tenant: str, subject: str, query: str, limit: int, idempotency_key: str,
-                        *, max_tool_calls: int = 2, duration_seconds: float = 120) -> dict[str, Any]:
+                        *, max_tool_calls: int = 2, duration_seconds: float = 120,
+                        reasoning_config_hash: str | None = None) -> dict[str, Any]:
         if (not all(isinstance(value, str) and 1 <= len(value) <= 200 for value in (tenant, query))
                 or not isinstance(subject, str) or not 1 <= len(subject) <= 256
                 or not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128
@@ -297,8 +310,14 @@ class Store:
                 or type(duration_seconds) not in (int, float) or not math.isfinite(duration_seconds)
                 or not 0 < duration_seconds <= 600):
             raise Work4ceError("invalid_workflow_request", 422)
-        request_hash = digest({"query": query, "limit": limit, "max_tool_calls": max_tool_calls,
-                               "duration_seconds": float(duration_seconds)})
+        if reasoning_config_hash is not None and not self._valid_model_hash(reasoning_config_hash):
+            raise Work4ceError("invalid_workflow_request", 422)
+        request_data = {"query": query, "limit": limit, "max_tool_calls": max_tool_calls,
+                        "duration_seconds": float(duration_seconds)}
+        # Omit the key for existing deterministic v2 idempotency compatibility.
+        if reasoning_config_hash is not None:
+            request_data["reasoning_config_hash"] = reasoning_config_hash
+        request_hash = digest(request_data)
         identity = str(uuid4())
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -331,7 +350,7 @@ class Store:
                 created = connection.execute(insert(workflow_state).values(id=identity, tenant=tenant,
                     subject=subject, idempotency_key=idempotency_key, request_hash=request_hash, query=query,
                     limit=limit, max_tool_calls=max_tool_calls, tool_calls=0, deadline=time.time() + duration_seconds,
-                    state="queued", revision=0).on_conflict_do_nothing(
+                    state="queued", revision=0, reasoning_config_hash=reasoning_config_hash).on_conflict_do_nothing(
                         index_elements=["tenant", "subject", "idempotency_key"]).returning(workflow_state.c.id)).scalar()
                 if created is None:
                     raise _IdempotencyRace()
@@ -468,6 +487,158 @@ class Store:
                 return
             self._cas_workflow(connection, row, lease_owner=None, lease_until=None)
             self._audit(connection, tenant, subject, "workflow.release", identity, row["state"])
+
+    @staticmethod
+    def _valid_model_hash(value: Any) -> bool:
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+    @classmethod
+    def _validate_model_lookup(cls, stage: str, input_hash: str, config_hash: str) -> None:
+        if not isinstance(stage, str) or stage not in {"plan", "assessment"} or not cls._valid_model_hash(input_hash) or not cls._valid_model_hash(config_hash):
+            raise Work4ceError("invalid_model_request", 422)
+
+    @staticmethod
+    def _model_scope(tenant: str, subject: str, identity: str):
+        return and_(model_attempts.c.tenant == tenant, model_attempts.c.subject == subject,
+                    model_attempts.c.workflow_id == identity)
+
+    @staticmethod
+    def _valid_model_result(result: Any) -> bool:
+        return (isinstance(result, dict)
+            and set(result) == {"output", "input_tokens", "output_tokens", "provider", "model"}
+            and isinstance(result["output"], dict)
+            and type(result["input_tokens"]) is int and result["input_tokens"] >= 0
+            and type(result["output_tokens"]) is int and result["output_tokens"] >= 0
+            and all(isinstance(result[key], str) and 1 <= len(result[key]) <= 200 for key in ("provider", "model")))
+
+    def get_model_result(self, tenant: str, subject: str, identity: str, stage: str,
+                         input_hash: str, config_hash: str) -> dict[str, Any] | None:
+        self._validate_model_lookup(stage, input_hash, config_hash)
+        with self._connection() as connection:
+            self._load_workflow(connection, tenant, subject, identity)
+            row = connection.execute(select(model_attempts).where(
+                self._model_scope(tenant, subject, identity), model_attempts.c.stage == stage,
+                model_attempts.c.input_hash == input_hash, model_attempts.c.config_hash == config_hash,
+                model_attempts.c.state == "completed").order_by(model_attempts.c.completion_revision.desc()).limit(1)).first()
+        if row is None:
+            return None
+        try:
+            if not isinstance(row.result, str) or len(row.result.encode()) > 65536:
+                raise ValueError("invalid cached result")
+            result = json.loads(row.result)
+            if (not self._valid_model_result(result) or digest(result) != row.result_hash
+                    or result["input_tokens"] != row.actual_input_tokens
+                    or result["output_tokens"] != row.actual_output_tokens
+                    or result["input_tokens"] + result["output_tokens"] > row.reserved_tokens):
+                raise ValueError("invalid cached result")
+        except (ValueError, TypeError, RecursionError):
+            raise Work4ceError("model_result_integrity_failure", 500) from None
+        return result
+
+    def model_usage(self, tenant: str, subject: str, identity: str) -> dict[str, Any]:
+        with self._connection() as connection:
+            workflow = self._load_workflow(connection, tenant, subject, identity)
+            return self._model_usage(connection, workflow)
+
+    def _model_usage(self, connection: Connection, workflow: dict[str, Any]) -> dict[str, Any]:
+        values = connection.execute(select(func.count(model_attempts.c.id),
+            func.coalesce(func.sum(model_attempts.c.reserved_tokens), 0),
+            func.coalesce(func.sum(model_attempts.c.reserved_cost_microusd), 0),
+            func.coalesce(func.sum(case((model_attempts.c.state == "completed", model_attempts.c.actual_input_tokens), else_=0)), 0),
+            func.coalesce(func.sum(case((model_attempts.c.state == "completed", model_attempts.c.actual_output_tokens), else_=0)), 0),
+            func.coalesce(func.sum(case((model_attempts.c.state == "completed", model_attempts.c.actual_cost_microusd), else_=0)), 0)).where(
+                self._model_scope(workflow["tenant"], workflow["subject"], workflow["id"]))).one()
+        data = dict(zip(("calls", "reserved_tokens", "reserved_cost_microusd", "actual_input_tokens",
+                         "actual_output_tokens", "actual_cost_microusd"), (int(value) for value in values)))
+        for key in ("max_model_calls", "max_model_tokens", "max_model_cost_microusd"):
+            data[key] = workflow[key]
+        return data
+
+    def reserve_model_call(self, tenant: str, subject: str, identity: str, worker: str,
+                           stage: str, input_hash: str, config_hash: str, *, reserved_tokens: int,
+                           reserved_cost_microusd: int, max_calls: int, max_tokens: int,
+                           max_cost_microusd: int) -> str:
+        self._validate_model_lookup(stage, input_hash, config_hash)
+        if (type(reserved_tokens) is not int or not 1 <= reserved_tokens <= 262144
+                or type(reserved_cost_microusd) is not int or not 0 <= reserved_cost_microusd <= 1_000_000_000
+                or type(max_calls) is not int or not 1 <= max_calls <= 8
+                or type(max_tokens) is not int or not 1 <= max_tokens <= 262144
+                or type(max_cost_microusd) is not int or not 0 <= max_cost_microusd <= 1_000_000_000):
+            raise Work4ceError("invalid_model_budget", 422)
+        limits_hash = digest({"config_hash": config_hash, "max_calls": max_calls,
+                              "max_tokens": max_tokens, "max_cost_microusd": max_cost_microusd})
+        attempt_id = str(uuid4())
+        with self._connection(write=True) as connection:
+            row = self._load_workflow(connection, tenant, subject, identity, lock=True)
+            self._require_live_lease(row, worker)
+            if row["state"] not in {"running", "collected"}:
+                raise Work4ceError("invalid_workflow_transition", 409)
+            if row["model_limits_hash"] is not None and row["model_limits_hash"] != limits_hash:
+                raise Work4ceError("model_configuration_changed", 409)
+            usage = self._model_usage(connection, row)
+            if (usage["calls"] >= max_calls or usage["reserved_tokens"] + reserved_tokens > max_tokens
+                    or usage["reserved_cost_microusd"] + reserved_cost_microusd > max_cost_microusd):
+                raise Work4ceError("model_budget_exhausted", 409)
+            self._cas_workflow(connection, row, require_worker=worker, model_limits_hash=limits_hash,
+                               max_model_calls=max_calls, max_model_tokens=max_tokens, max_model_cost_microusd=max_cost_microusd)
+            connection.execute(model_attempts.insert().values(id=attempt_id, workflow_id=identity,
+                tenant=tenant, subject=subject, stage=stage, input_hash=input_hash, config_hash=config_hash,
+                state="reserved", reserved_tokens=reserved_tokens, reserved_cost_microusd=reserved_cost_microusd))
+            self._audit(connection, tenant, subject, "model.reserve", identity, "reserved")
+        return attempt_id
+
+    def _load_model_attempt(self, connection: Connection, tenant: str, subject: str, identity: str, attempt_id: str):
+        row = connection.execute(select(model_attempts).where(self._model_scope(tenant, subject, identity),
+            model_attempts.c.id == attempt_id)).first()
+        if row is None:
+            raise Work4ceError("model_attempt_not_found", 404)
+        if row.state != "reserved":
+            raise Work4ceError("model_attempt_terminal", 409)
+        return row
+
+    def complete_model_call(self, tenant: str, subject: str, identity: str, worker: str, attempt_id: str,
+                            result: dict[str, Any], *, actual_input_tokens: int, actual_output_tokens: int,
+                            actual_cost_microusd: int) -> None:
+        try:
+            if not self._valid_model_result(result) or len(canonical(result).encode()) > 65536:
+                raise ValueError("invalid model output")
+            raw, checksum = canonical(result), digest(result)
+        except (ValueError, TypeError, RecursionError):
+            raise Work4ceError("invalid_model_result", 422) from None
+        if (not all(type(value) is int and value >= 0 for value in
+                    (actual_input_tokens, actual_output_tokens, actual_cost_microusd))
+                or result["input_tokens"] != actual_input_tokens or result["output_tokens"] != actual_output_tokens):
+            raise Work4ceError("invalid_model_usage", 422)
+        with self._connection(write=True) as connection:
+            row = self._load_workflow(connection, tenant, subject, identity, lock=True)
+            self._require_live_lease(row, worker)
+            attempt = self._load_model_attempt(connection, tenant, subject, identity, attempt_id)
+            if actual_input_tokens + actual_output_tokens > attempt.reserved_tokens or actual_cost_microusd > attempt.reserved_cost_microusd:
+                raise Work4ceError("model_reservation_exceeded", 409)
+            self._cas_workflow(connection, row, require_worker=worker)
+            changed = connection.execute(update(model_attempts).where(self._model_scope(tenant, subject, identity),
+                model_attempts.c.id == attempt_id, model_attempts.c.state == "reserved").values(state="completed",
+                result=raw, result_hash=checksum, actual_input_tokens=actual_input_tokens,
+                actual_output_tokens=actual_output_tokens, actual_cost_microusd=actual_cost_microusd,
+                completion_revision=row["revision"] + 1))
+            if changed.rowcount != 1:
+                raise Work4ceError("model_attempt_terminal", 409)
+            self._audit(connection, tenant, subject, "model.complete", identity, "completed")
+
+    def fail_model_call(self, tenant: str, subject: str, identity: str, worker: str,
+                        attempt_id: str, error_code: str) -> None:
+        if not isinstance(error_code, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,79}", error_code) is None:
+            raise Work4ceError("invalid_model_error_code", 422)
+        with self._connection(write=True) as connection:
+            row = self._load_workflow(connection, tenant, subject, identity, lock=True)
+            self._require_live_lease(row, worker)
+            self._load_model_attempt(connection, tenant, subject, identity, attempt_id)
+            self._cas_workflow(connection, row, require_worker=worker)
+            changed = connection.execute(update(model_attempts).where(self._model_scope(tenant, subject, identity),
+                model_attempts.c.id == attempt_id, model_attempts.c.state == "reserved").values(state="failed", error_code=error_code))
+            if changed.rowcount != 1:
+                raise Work4ceError("model_attempt_terminal", 409)
+            self._audit(connection, tenant, subject, "model.fail", identity, "failed")
 
     def close(self) -> None:
         with self._lock:
