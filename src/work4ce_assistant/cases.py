@@ -37,6 +37,11 @@ class CaseService:
         return self.store.list_cases(context.tenant_id,context.subject,
                                      all_cases=self._all_cases(context),limit=limit)
 
+    def page(self, context: ExecutionContext, *, limit: int=50,cursor: str | None=None) -> dict:
+        self._authorize(context)
+        return self.store.page_cases(context.tenant_id,context.subject,
+            all_cases=self._all_cases(context),limit=limit,cursor=cursor)
+
     def assign(self, context: ExecutionContext, identity: str, revision: int, assignee: str | None) -> dict:
         self._authorize(context,'cases:coordinate')
         if assignee is not None and (not isinstance(assignee,str) or assignee not in self.assignees):

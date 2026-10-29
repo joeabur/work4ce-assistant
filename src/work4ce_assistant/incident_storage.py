@@ -10,6 +10,7 @@ from uuid import UUID,uuid4
 from sqlalchemy import and_,or_,select,update
 
 from .contracts import Work4ceError,canonical,digest
+from .pagination import decode_queue_cursor,encode_queue_cursor
 from .storage import Store,case_coordination,incident_activity,incident_investigations,incidents_table,investigations,now
 
 FIELDS=('id','investigation_id','creator','assignee','title','description','severity','status','revision',
@@ -365,16 +366,13 @@ class IncidentRepository:
             self._history(connection,record,report)
             return self._view(record,case)
 
-    def list(self,tenant,subject,*,all_cases=False,limit=50):
-        self._flags(tenant,subject,all_cases)
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise Work4ceError('invalid_incident_update',422)
+    def _queue_statement(self,tenant,subject,all_cases):
         parent=investigations.alias('primary_source')
         primary_case=case_coordination.alias('primary_case')
         joined=incidents_table.join(parent,and_(incidents_table.c.investigation_id==parent.c.id,
             incidents_table.c.tenant==parent.c.tenant)).outerjoin(primary_case,and_(
                 primary_case.c.investigation_id==parent.c.id,primary_case.c.tenant==parent.c.tenant))
-        statement=select(incidents_table.c.id).select_from(joined).where(incidents_table.c.tenant==tenant)
+        statement=select(incidents_table.c.id,incidents_table.c.created_at).select_from(joined).where(incidents_table.c.tenant==tenant)
         if not all_cases:
             member=incident_investigations.alias('scoped_member')
             source=investigations.alias('scoped_source')
@@ -386,9 +384,14 @@ class IncidentRepository:
                 or_(source.c.id.is_(None),and_(source.c.subject!=subject,
                     or_(assigned.c.assignee.is_(None),assigned.c.assignee!=subject)))).exists()
             statement=statement.where(or_(parent.c.subject==subject,primary_case.c.assignee==subject),~invisible)
+        return statement
+
+    def list(self,tenant,subject,*,all_cases=False,limit=50):
+        self._flags(tenant,subject,all_cases)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise Work4ceError('invalid_incident_update',422)
+        statement=self._queue_statement(tenant,subject,all_cases).with_only_columns(incidents_table.c.id)
         statement=statement.order_by(incidents_table.c.updated_at.desc(),incidents_table.c.id.desc()).limit(limit)
-        # One consistent read view avoids false integrity failures when source
-        # membership or assignment changes between selecting IDs and projection.
         with self._snapshot() as connection:
             identities=connection.execute(statement).scalars().all()
             result=[]
@@ -396,6 +399,30 @@ class IncidentRepository:
                 record,case,_=self._record(connection,tenant,subject,identity,all_cases=all_cases)
                 result.append(self._view(record,case))
             return result
+
+    def page(self,tenant,subject,*,all_cases=False,limit=50,cursor=None):
+        self._flags(tenant,subject,all_cases)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise Work4ceError('invalid_incident_update',422)
+        scope_subject=None if all_cases else subject
+        statement=self._queue_statement(tenant,subject,all_cases)
+        if cursor is not None:
+            created_at,identity=decode_queue_cursor(cursor,'incidents',tenant,scope_subject)
+            statement=statement.where(or_(incidents_table.c.created_at < created_at,
+                and_(incidents_table.c.created_at == created_at,incidents_table.c.id < identity)))
+        statement=statement.order_by(incidents_table.c.created_at.desc(),incidents_table.c.id.desc()).limit(limit+1)
+        with self._snapshot() as connection:
+            rows=connection.execute(statement).all()
+            selected=rows[:limit]
+            items=[]
+            for row in selected:
+                record,case,_=self._record(connection,tenant,subject,row.id,all_cases=all_cases)
+                items.append(self._view(record,case))
+            next_cursor=None
+            if len(rows)>limit:
+                anchor=selected[-1]
+                next_cursor=encode_queue_cursor('incidents',tenant,scope_subject,anchor.created_at,anchor.id)
+            return {'items':items,'next_cursor':next_cursor}
 
     def activity(self,tenant,subject,incident_id,*,all_cases=False):
         self._flags(tenant,subject,all_cases)

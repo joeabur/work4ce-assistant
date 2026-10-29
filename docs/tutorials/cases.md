@@ -1,6 +1,6 @@
 # Case assignment and escalation
 
-Case coordination adds operational responsibility to an investigation. It supports assignment/unassignment, an escalation reason, and manager acknowledgment. All cases and evidence remain synthetic. This is an incremental incident-management feature; full incidents, resolution tracking and independent notes are future work.
+Case coordination adds operational responsibility to an investigation. It supports assignment/unassignment, an escalation reason, and manager acknowledgment. All cases and evidence remain synthetic. [Linked incidents](incidents.md) separately provide resolution tracking and independent notes.
 
 ## Prepare
 
@@ -38,7 +38,8 @@ The coordination queue includes explicitly stored assignments/escalations in the
 | Operation | Purpose |
 |---|---|
 | `GET /case-assignees` | Eligible trusted subjects for coordinators |
-| `GET /cases?limit=50` | Explicit coordination records in current scope; maximum 100 |
+| `GET /cases?limit=50` | Legacy latest-update array; maximum 100 |
+| `GET /cases/history?limit=50` | Creation-ordered page envelope with `next_cursor`; maximum 100 per page |
 | `GET /investigations/{id}/case` | Current coordination or revision-zero default |
 | `POST /investigations/{id}/case/assignment` | `{"expected_revision":0,"assignee":"demo-admin"}`; null unassigns |
 | `POST /investigations/{id}/case/escalation` | `{"expected_revision":1,"reason":"Inspect this synthetic evidence."}` |
@@ -54,4 +55,4 @@ Reasons are trimmed, nonempty and at most 1,000 characters. They render as text.
 
 The backend suite covers tenant/role/assignee boundaries, signed-token directory admission, reassignment revocation, stale writes, a two-store race with one CAS winner, atomic audit rollback, restart persistence, SQLite v4 preservation and unchanged reports/workflows/reviews. Browser checks cover actual assignment, escalation, manager acknowledgment, literal hostile reason markup, stale-dialog rejection and mobile layout. Installed-wheel checks exercise migration 0005 and the API lifecycle. See [release readiness](../release-readiness.md).
 
-The queue is bounded without UI pagination. [Linked incident management](incidents.md) now adds work/resolution status and authored note history. Unlink/merge governance, full case-reason content history, SLA routing, external directory synchronization and notifications remain incomplete. No messages are sent to other people. Production remains disabled.
+The queue loads 50 records initially; **Load older coordinated cases** appends older pages by investigation creation time. Assignment/escalation updates do not change that order. See [operational queues](queues.md) for cursor scope and live-change behavior. [Linked incident management](incidents.md) now adds work/resolution status and authored note history. Unlink/merge governance, full case-reason content history, SLA routing, external directory synchronization and notifications remain incomplete. No messages are sent to other people. Production remains disabled.

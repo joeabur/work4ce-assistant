@@ -26,7 +26,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 
 from .contracts import Work4ceError, canonical, digest
-from .pagination import decode_history_cursor, encode_history_cursor
+from .pagination import decode_history_cursor, encode_history_cursor, decode_queue_cursor, encode_queue_cursor
 
 HEAD = "0007_incident_sources"
 metadata = MetaData()
@@ -1178,6 +1178,32 @@ class Store:
             rows = connection.execute(statement.order_by(case_coordination.c.updated_at.desc(),
                 case_coordination.c.investigation_id.desc()).limit(limit)).all()
         return [self._case_data(row.creator,row) for row in rows]
+
+    def page_cases(self, tenant: str, subject: str, *, all_cases: bool = False,
+                   limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+        if type(all_cases) is not bool or type(limit) is not int or not 1 <= limit <= 100:
+            raise Work4ceError("invalid_case_update",422)
+        scope_subject=None if all_cases else subject
+        joined=case_coordination.join(investigations,and_(case_coordination.c.investigation_id==investigations.c.id,
+            case_coordination.c.tenant==investigations.c.tenant))
+        statement=select(case_coordination,investigations.c.subject.label("creator"),
+            investigations.c.created_at.label("anchor_created_at")).select_from(joined).where(case_coordination.c.tenant==tenant)
+        if not all_cases:
+            statement=statement.where(or_(investigations.c.subject==subject,case_coordination.c.assignee==subject))
+        if cursor is not None:
+            created_at,identity=decode_queue_cursor(cursor,'cases',tenant,scope_subject)
+            statement=statement.where(or_(investigations.c.created_at < created_at,
+                and_(investigations.c.created_at == created_at,case_coordination.c.investigation_id < identity)))
+        with self._connection() as connection:
+            rows=connection.execute(statement.order_by(investigations.c.created_at.desc(),
+                case_coordination.c.investigation_id.desc()).limit(limit+1)).all()
+        selected=rows[:limit]
+        items=[self._case_data(row.creator,row) for row in selected]
+        next_cursor=None
+        if len(rows)>limit:
+            anchor=selected[-1]
+            next_cursor=encode_queue_cursor('cases',tenant,scope_subject,anchor.anchor_created_at,anchor.investigation_id)
+        return {"items":items,"next_cursor":next_cursor}
 
     def mutate_case(self, tenant: str, subject: str, identity: str, expected_revision: int, operation: str,
                     *, assignee: str | None = None, reason: str | None = None, manage: bool = False) -> dict[str, Any]:

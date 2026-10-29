@@ -2257,13 +2257,6 @@ main {
   color: #95a39c;
   font-size: 9px;
 }
-.incident-list-limit {
-  margin: 0;
-  padding: 14px 22px;
-  color: #95a39c;
-  font-size: 10px;
-  line-height: 1.6;
-}
 .incident-evidence-choices {
   margin: 20px 0 0;
   padding: 12px;
@@ -2302,9 +2295,6 @@ main {
 @media (max-width: 760px) {
   .incident-detail {
     padding: 13px;
-  }
-  .incident-list-limit {
-    padding: 13px 16px;
   }
 }
 
@@ -2358,4 +2348,13 @@ main {
 }
 .incident-source-choice > label > span {
   min-width: 0;
+}
+
+.queue-footer .button {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+.queue-footer p {
+  overflow-wrap: anywhere;
 }

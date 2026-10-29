@@ -47,7 +47,8 @@ Every note/status change requires `expected_revision`. A concurrent edit returns
 | Operation | Purpose |
 |---|---|
 | `POST /incidents` | `{investigation_id,title,description,severity}`; severity is low/medium/high/critical |
-| `GET /incidents?limit=50` | Current scoped queue; maximum 100 |
+| `GET /incidents?limit=50` | Legacy scoped latest-update array; maximum 100 |
+| `GET /incidents/history?limit=50` | Creation-ordered scoped page with `next_cursor`; maximum 100 per page |
 | `GET /investigations/{id}/incident` | Linked incident; 404 if absent or outside scope |
 | `GET /incidents/{id}` | Current incident details |
 | `GET /incidents/{id}/investigations` | Safe source metadata and evidence choices |
@@ -62,7 +63,7 @@ Titles are nonempty and at most 200 characters. Descriptions, notes and status c
 
 The PostgreSQL/SQLite suite covers source bindings, current case scope, reassignment revocation, legal/illegal transitions, escalation barriers, evidence references, duplicate creation/CAS races, audit rollback, snapshot consistency, disposition/history integrity and the 200-entry bound. SQLite v5 data preservation is verified. Browser checks exercise the full lifecycle, hostile text, citations, stale edits and concurrent view loading; the installed wheel exercises migration6 and authenticated incident operations. See [release readiness](../release-readiness.md).
 
-The queue loads at most 50 incidents by default without cursor pagination. Standalone incidents, unlinking/merging, title/severity editing, SLAs, notifications and broader enterprise routing remain future work. Application-level append-only history is not tamper-resistant against privileged database writers. All evidence remains synthetic and production mode remains disabled.
+The queue starts with 50 incidents; **Load older incidents** appends older pages by incident creation time. Status/note updates do not change that order. See [operational queues](queues.md) for current-access and cursor rules. Standalone incidents, unlinking/merging, title/severity editing, SLAs, notifications and broader enterprise routing remain future work. Application-level append-only history is not tamper-resistant against privileged database writers. All evidence remains synthetic and production mode remains disabled.
 
 ## Link related investigations
 

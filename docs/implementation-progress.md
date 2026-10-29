@@ -1,5 +1,7 @@
 # Implementation progress
 
+Increment sections retain the evidence and gaps recorded when each increment shipped; the final operational-queue section records the latest delivery.
+
 The synthetic vertical slice and PostgreSQL store are `integration_tested`; the OIDC verifier/API adapter is `fixture_tested` with actual signatures and mocked HTTPS. The broader phases remain partial. Production mode is disabled.
 
 | Phase | State | Scope / remaining gate |
@@ -17,7 +19,7 @@ Initial discovery found an unborn checkout. Read-only Git checks failed inside t
 
 ## Verification record
 
-`.venv/bin/python scripts/test_postgres.py` completed **357 tests in 111.674 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, 13 OIDC API, 24 core, four real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration, four workflow API, 24 model gateway, 21 model storage, 13 grounding/reasoning, six model API, 25 review storage/migration and 13 review policy/API tests, 22 workbench storage cases, ten workbench API/static cases, 21 case storage/migration, ten case policy/API, 29 incident storage/migration, six incident API, 25 multi-source storage/migration and five link API tests.
+`.venv/bin/python scripts/test_postgres.py` completed **379 tests in 120.761 seconds with zero skips** on real PostgreSQL 17.11 and SQLite: 17 authentication verifier, 13 OIDC API, 24 core, four real end-to-end, 13 foundation storage/migration, six transport, 27 workflow storage, 19 orchestration, four workflow API, 24 model gateway, 21 model storage, 13 grounding/reasoning, six model API, 25 review storage/migration and 13 review policy/API tests, 22 workbench storage cases, ten workbench API/static cases, 21 case storage/migration, ten case policy/API, 29 incident storage/migration, six incident API, 25 multi-source storage/migration, five link API, 18 operational-queue storage and four queue API tests.
 
 Migration `0002_workflows` adds owner-scoped idempotency and atomic 100-pending-workflow admission, checkpoint/revision/lease fencing, manual resume/cancel/state APIs and persisted invocation/deadline budgets. Four end-to-end tests terminate a real worker with `os._exit` after checkpoint commit, restart the API and resume after lease expiry on SQLite and PostgreSQL. Evidence remained stable and no second REST search occurred.
 
@@ -72,3 +74,12 @@ Repository reads use consistent snapshots to keep scope, revision and activity c
 Migration `0007_incident_sources` backfills primary source membership for v6 incidents and adds qualified evidence references/link activity. One primary plus up to nine related collected synthetic reports are hash-bound to the incident. Current case scope must cover every member for reads and mutations; queue filtering enforces that intersection before its limit. Linking never expands access, and assignment changes can revoke the entire group even from its incident author. Primary fields and independent report/workflow/approval boundaries remain stable.
 
 Sorted parent/case/incident locks, membership-drift fences, unique source bindings and revision/activity/audit commits protect concurrent links and creation without orphans. Notes namespace source/evidence pairs, retain primary-only legacy fields, and validate reference chronology. Resolution/closing checks pending escalation on every source. New tests cover v6 backfill, duplicate local evidence IDs, source/case integrity, caps10/200, audit rollback, snapshot reads, queue scope, link/create races and cross-link lock ordering. The full PostgreSQL/SQLite suite passed 357 tests in 111.674 seconds with zero skips. Seven Chromium checks passed in 43.238 seconds, including linking, literal link text, secondary-source evidence highlighting and mutation refresh while viewing that source. Build/typecheck, isolated wheel migration7/link/citation/disposition checks and desktop/mobile inspection passed. Large-queue performance, unlink/merge governance and operational queue pagination remain unverified or incomplete.
+
+
+## Operational queue pagination increment
+
+GET `/cases/history` and `/incidents/history` add creation-ordered page envelopes while preserving the legacy latest-update arrays. Coordination follows investigation creation; incidents follow incident creation. Updates do not move records between pages. Strict unsigned markers bind queue kind, tenant and read scope, while every request independently reapplies current permissions. Incident all-source scope is filtered before the limit. Safe DTOs and report/review/response authority remain unchanged. No schema or dependency change was needed; head remains `0007_incident_sources`.
+
+The workbench starts each queue with 50 records, appends older pages without duplicate IDs and fences delayed pages across Refresh and session changes. Counts cover loaded records. The complete PostgreSQL/SQLite suite passed **379 tests in 120.761 seconds with zero skips**, including 18 queue storage and four queue API cases. **Eight Chromium checks passed in 53.342 seconds**, including 55 tied-time records in each operational queue, unique coverage, delayed-page refresh protection and mobile overflow checks. Build/typecheck, isolated installed-wheel two-page queue APIs and migration7 passed; desktop/mobile rendering was inspected.
+
+Paging preserves position rather than freezing live state or permissions; newly visible records before a marker require Refresh. Review/response queues remain bounded. Server-side queue search, unlink/merge governance and large-queue/remote-database performance remain incomplete. This advances the requested workbench and incident-management scope; production and live privileged response remain disabled. See [the queue guide](tutorials/queues.md).

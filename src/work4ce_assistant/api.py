@@ -412,6 +412,10 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     async def case_queue(ctx: Context,limit: int=Query(default=50,ge=1,le=100)):
         return cases.list(ctx,limit=limit)
 
+    @app.get("/cases/history")
+    async def case_history(ctx: Context,limit: int=Query(default=50,ge=1,le=100),cursor: str | None=None):
+        return cases.page(ctx,limit=limit,cursor=cursor)
+
     @app.get("/investigations/{identity}/case")
     async def case_state(identity: UUID,ctx: Context):
         return cases.get(ctx,str(identity))
@@ -435,6 +439,10 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     @app.get("/incidents")
     async def incident_queue(ctx: Context,limit: int=Query(default=50,ge=1,le=100)):
         return incidents.list(ctx,limit=limit)
+
+    @app.get("/incidents/history")
+    async def incident_history(ctx: Context,limit: int=Query(default=50,ge=1,le=100),cursor: str | None=None):
+        return incidents.page(ctx,limit=limit,cursor=cursor)
 
     @app.get("/investigations/{identity}/incident")
     async def investigation_incident(identity: UUID,ctx: Context):

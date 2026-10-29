@@ -436,12 +436,17 @@ class WorkbenchBrowserTests(unittest.TestCase):
         # Wait for the stale response handler itself before asserting it was ignored.
         self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
         expect(rows).to_have_count(50)
-        with self.page.expect_response(lambda response:'cursor=' in response.url and '/investigations/history?' in response.url) as event:
-            older.click()
-        self.assertEqual(event.value.status,200)
-        page=event.value.json()
-        self.assertIsNone(page['next_cursor'])
-        expect(rows).to_have_count(50+len(page['items']))
+        loaded=50
+        while True:
+            with self.page.expect_response(lambda response:'cursor=' in response.url and '/investigations/history?' in response.url) as event:
+                older.click()
+            self.assertEqual(event.value.status,200)
+            page=event.value.json()
+            loaded+=len(page['items'])
+            expect(rows).to_have_count(loaded)
+            if page['next_cursor'] is None:
+                break
+            self.assertLess(loaded,200)
         row_ids=rows.evaluate_all('(items) => items.map(item => item.dataset.testid)')
         self.assertEqual(len(row_ids),len(set(row_ids)))
         for identity in identities:
@@ -458,6 +463,79 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.login(self.reviewer)
         self.assertEqual(self.page.get_by_role('button',name='Load older investigations',exact=True).count(),1)
         expect(rows).to_have_count(50)
+        self.assertEqual(self.policy_errors,[])
+
+    def test_operational_queue_pagination_and_refresh(self):
+        from sqlalchemy import update
+        from work4ce_assistant.api import TENANT
+        from work4ce_assistant.incident_storage import IncidentRepository
+        from work4ce_assistant.storage import (Store,investigations,case_coordination,incidents_table,
+                                              incident_activity,incident_investigations)
+        store=Store(self.database)
+        source_ids=[]
+        incident_ids=[]
+        try:
+            repository=IncidentRepository(store)
+            for index in range(55):
+                source=store.begin(TENANT,'demo-analyst')
+                store.finish(TENANT,'demo-analyst',source,{'synthetic':True,'query':f'Operational queue fixture {index}',
+                    'evidence':[],'findings':[],'assessment':'needs_analyst_review'},'completed')
+                store.mutate_case(TENANT,'demo-analyst',source,0,'assign',assignee='demo-analyst')
+                incident=repository.create(TENANT,'demo-analyst',source,f'Queue incident {index}','Synthetic archived work.','low')
+                source_ids.append(source)
+                incident_ids.append(incident['id'])
+            stamp='2025-02-01T00:00:00+00:00'
+            with store.engine.begin() as connection:
+                connection.execute(update(investigations).where(investigations.c.id.in_(source_ids)).values(created_at=stamp))
+                connection.execute(update(case_coordination).where(case_coordination.c.investigation_id.in_(source_ids)).values(updated_at=stamp))
+                connection.execute(update(incidents_table).where(incidents_table.c.id.in_(incident_ids)).values(created_at=stamp,updated_at=stamp))
+                connection.execute(update(incident_activity).where(incident_activity.c.incident_id.in_(incident_ids)).values(created_at=stamp))
+                connection.execute(update(incident_investigations).where(incident_investigations.c.incident_id.in_(incident_ids)).values(linked_at=stamp))
+        finally: store.close()
+        self.login(self.analyst)
+        for view,endpoint,label,loading_label,prefix,identities in (
+            ('Case coordination','/cases/history?','Load older coordinated cases','Loading older coordinated cases…','coordination-row-',source_ids),
+            ('Incidents','/incidents/history?','Load older incidents','Loading older incidents…','incident-row-',incident_ids)):
+            self.navigate(view)
+            rows=self.page.locator('[data-testid^="'+prefix+'"]')
+            expect(rows).to_have_count(50)
+            older=self.page.get_by_role('button',name=label,exact=True)
+            expect(older).to_be_visible()
+            held=[]
+            def intercept(route):
+                if 'cursor=' in route.request.url:
+                    held.append((route,route.fetch()))
+                else: route.continue_()
+            pattern='**'+endpoint+'*'
+            self.page.route(pattern,intercept)
+            older.click()
+            expect(self.page.get_by_role('button',name=loading_label,exact=True)).to_be_visible()
+            self.page.get_by_role('button',name='Refresh',exact=True).click()
+            expect(older).to_be_enabled()
+            self.assertEqual(len(held),1)
+            held[0][0].fulfill(response=held[0][1])
+            self.page.unroute(pattern,intercept)
+            self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+            expect(rows).to_have_count(50)
+            with self.page.expect_response(lambda response:'cursor=' in response.url and endpoint in response.url) as event:
+                older.click()
+            self.assertEqual(event.value.status,200)
+            page=event.value.json()
+            self.assertIsNone(page['next_cursor'])
+            expect(rows).to_have_count(50+len(page['items']))
+            seen=rows.evaluate_all('(items) => items.map(item => item.dataset.testid)')
+            self.assertEqual(len(seen),len(set(seen)))
+            for identity in identities:
+                self.assertIn(prefix+identity,seen)
+            expect(older).not_to_be_visible()
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'))
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-queue-pages-mobile.png'),full_page=True)
+        self.logout()
+        self.login(self.reviewer)
+        self.navigate('Incidents')
+        expect(self.page.locator('[data-testid^="incident-row-"]')).to_have_count(50)
+        expect(self.page.get_by_role('button',name='Load older incidents',exact=True)).to_be_visible()
         self.assertEqual(self.policy_errors,[])
 
     def test_multi_investigation_incident_citations(self):

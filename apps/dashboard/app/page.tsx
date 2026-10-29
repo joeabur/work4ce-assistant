@@ -26,7 +26,8 @@ type Case = {
   evidence_count: number;
   review_state: string | null;
 };
-type CasePage = { items: Case[]; next_cursor: string | null };
+type QueuePage<T> = { items: T[]; next_cursor: string | null };
+type CasePage = QueuePage<Case>;
 type Review = {
   investigation_id: string;
   review_id: string;
@@ -201,6 +202,8 @@ const labels: Record<string, string> = {
   needs_analyst_review: "Analyst review needed",
 };
 const messages: Record<string, string> = {
+  invalid_queue_cursor:
+    "This queue position is no longer valid. Refresh the workspace to load the latest cases and incidents.",
   incident_source_conflict:
     "That investigation is already linked to an incident. Refresh and review the current sources before trying again.",
   incident_source_limit:
@@ -494,7 +497,13 @@ export default function Page() {
     [historyLoading, setHistoryLoading] = useState(false),
     [historyLoaded, setHistoryLoaded] = useState(false),
     [coordinationRows, setCoordinationRows] = useState<CaseCoord[]>([]),
+    [coordinationCursor, setCoordinationCursor] = useState<string | null>(null),
+    [coordinationLoading, setCoordinationLoading] = useState(false),
+    [coordinationLoaded, setCoordinationLoaded] = useState(false),
     [incidents, setIncidents] = useState<Incident[]>([]),
+    [incidentCursor, setIncidentCursor] = useState<string | null>(null),
+    [incidentLoading, setIncidentLoading] = useState(false),
+    [incidentLoaded, setIncidentLoaded] = useState(false),
     [assignees, setAssignees] = useState<{ subject: string }[]>([]),
     [reviews, setReviews] = useState<Review[]>([]),
     [responses, setResponses] = useState<Proposal[]>([]),
@@ -522,6 +531,9 @@ export default function Page() {
     selection = useRef(0),
     historyVersion = useRef(0),
     historyBusy = useRef(false),
+    coordinationBusy = useRef(false),
+    incidentBusy = useRef(false),
+    workspaceRefreshing = useRef(false),
     createIntent = useRef<{ signature: string; key: string } | null>(null);
   const has = (p: string) => Boolean(me?.permissions.includes(p));
   const logout = useCallback(() => {
@@ -535,6 +547,9 @@ export default function Page() {
     selection.current++;
     historyVersion.current++;
     historyBusy.current = false;
+    coordinationBusy.current = false;
+    incidentBusy.current = false;
+    workspaceRefreshing.current = false;
     setMe(null);
     setTokenInput("");
     setConnecting(false);
@@ -543,7 +558,13 @@ export default function Page() {
     setHistoryLoading(false);
     setHistoryLoaded(false);
     setCoordinationRows([]);
+    setCoordinationCursor(null);
+    setCoordinationLoading(false);
+    setCoordinationLoaded(false);
     setIncidents([]);
+    setIncidentCursor(null);
+    setIncidentLoading(false);
+    setIncidentLoaded(false);
     setAssignees([]);
     setReviews([]);
     setResponses([]);
@@ -629,7 +650,16 @@ export default function Page() {
       const generation = epoch.current,
         version = ++historyVersion.current;
       historyBusy.current = false;
+      coordinationBusy.current = false;
+      incidentBusy.current = false;
+      workspaceRefreshing.current = true;
       setHistoryLoading(false);
+      setCoordinationCursor(null);
+      setCoordinationLoading(false);
+      setCoordinationLoaded(false);
+      setIncidentCursor(null);
+      setIncidentLoading(false);
+      setIncidentLoaded(false);
       setLoading(true);
       try {
         const [
@@ -656,14 +686,20 @@ export default function Page() {
             throw cause;
           }),
           identity.permissions.includes("cases:read")
-            ? request<CaseCoord[]>("/cases")
-            : Promise.resolve([]),
+            ? request<QueuePage<CaseCoord>>("/cases/history?limit=50")
+            : Promise.resolve<QueuePage<CaseCoord>>({
+                items: [],
+                next_cursor: null,
+              }),
           identity.permissions.includes("cases:coordinate")
             ? request<{ subject: string }[]>("/case-assignees")
             : Promise.resolve([]),
           identity.permissions.includes("cases:read")
-            ? request<Incident[]>("/incidents")
-            : Promise.resolve([]),
+            ? request<QueuePage<Incident>>("/incidents/history?limit=50")
+            : Promise.resolve<QueuePage<Incident>>({
+                items: [],
+                next_cursor: null,
+              }),
         ]);
         if (generation !== epoch.current || version !== historyVersion.current)
           return;
@@ -674,21 +710,38 @@ export default function Page() {
         setSources(connectors);
         setReviews(queue);
         setHealthy(ready.connectors);
-        setCoordinationRows(coordinated);
+        setCoordinationRows(coordinated.items);
+        setCoordinationCursor(coordinated.next_cursor);
+        setCoordinationLoaded(true);
         setAssignees(candidates);
-        setIncidents(incidentRows);
+        setIncidents(incidentRows.items);
+        setIncidentCursor(incidentRows.next_cursor);
+        setIncidentLoaded(true);
       } catch (cause) {
         if (generation === epoch.current && version === historyVersion.current)
           fail(cause);
       } finally {
-        if (generation === epoch.current && version === historyVersion.current)
+        if (
+          generation === epoch.current &&
+          version === historyVersion.current
+        ) {
+          workspaceRefreshing.current = false;
           setLoading(false);
+        }
       }
     },
     [request, fail],
   );
   const loadOlder = async () => {
-    if (!me || !nextCursor || loading || historyBusy.current) return;
+    if (
+      !me ||
+      !nextCursor ||
+      loading ||
+      workspaceRefreshing.current ||
+      busy ||
+      historyBusy.current
+    )
+      return;
     const generation = epoch.current,
       version = historyVersion.current,
       cursor = nextCursor;
@@ -716,6 +769,94 @@ export default function Page() {
       if (generation === epoch.current && version === historyVersion.current) {
         historyBusy.current = false;
         setHistoryLoading(false);
+      }
+    }
+  };
+  const loadOlderCoordinatedCases = async () => {
+    if (
+      !me ||
+      !coordinationCursor ||
+      loading ||
+      workspaceRefreshing.current ||
+      busy ||
+      coordinationBusy.current
+    )
+      return;
+    const generation = epoch.current,
+      version = historyVersion.current,
+      cursor = coordinationCursor;
+    coordinationBusy.current = true;
+    setCoordinationLoading(true);
+    setError("");
+    try {
+      const page = await request<QueuePage<CaseCoord>>(
+        `/cases/history?limit=50&cursor=${encodeURIComponent(cursor)}`,
+      );
+      if (generation !== epoch.current || version !== historyVersion.current)
+        return;
+      setCoordinationRows((current) => {
+        const known = new Set(current.map((item) => item.investigation_id));
+        return [
+          ...current,
+          ...page.items.filter((item) => {
+            if (known.has(item.investigation_id)) return false;
+            known.add(item.investigation_id);
+            return true;
+          }),
+        ];
+      });
+      setCoordinationCursor(page.next_cursor);
+    } catch (cause) {
+      if (generation === epoch.current && version === historyVersion.current)
+        fail(cause);
+    } finally {
+      if (generation === epoch.current && version === historyVersion.current) {
+        coordinationBusy.current = false;
+        setCoordinationLoading(false);
+      }
+    }
+  };
+  const loadOlderIncidents = async () => {
+    if (
+      !me ||
+      !incidentCursor ||
+      loading ||
+      workspaceRefreshing.current ||
+      busy ||
+      incidentBusy.current
+    )
+      return;
+    const generation = epoch.current,
+      version = historyVersion.current,
+      cursor = incidentCursor;
+    incidentBusy.current = true;
+    setIncidentLoading(true);
+    setError("");
+    try {
+      const page = await request<QueuePage<Incident>>(
+        `/incidents/history?limit=50&cursor=${encodeURIComponent(cursor)}`,
+      );
+      if (generation !== epoch.current || version !== historyVersion.current)
+        return;
+      setIncidents((current) => {
+        const known = new Set(current.map((item) => item.id));
+        return [
+          ...current,
+          ...page.items.filter((item) => {
+            if (known.has(item.id)) return false;
+            known.add(item.id);
+            return true;
+          }),
+        ];
+      });
+      setIncidentCursor(page.next_cursor);
+    } catch (cause) {
+      if (generation === epoch.current && version === historyVersion.current)
+        fail(cause);
+    } finally {
+      if (generation === epoch.current && version === historyVersion.current) {
+        incidentBusy.current = false;
+        setIncidentLoading(false);
       }
     }
   };
@@ -2377,11 +2518,12 @@ export default function Page() {
                 <div className="panel-heading">
                   <div>
                     <h2>Coordinated cases</h2>
-                    <p>Assigned and escalated investigations in your scope</p>
+                    <p>
+                      Assigned and escalated investigations · Newest first by
+                      investigation creation
+                    </p>
                   </div>
-                  <span className="pill">
-                    {coordinationRows.length} visible
-                  </span>
+                  <span className="pill">{coordinationRows.length} loaded</span>
                 </div>
                 {loading && !coordinationRows.length ? (
                   <Loading text="Loading case coordination…" />
@@ -2425,6 +2567,32 @@ export default function Page() {
                     text="Open an investigation to assign responsibility or request an escalation. Existing assignments and escalations will appear here."
                   />
                 )}
+                <div
+                  className="history-footer queue-footer"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <p>
+                    {coordinationRows.length} loaded · Newest first by
+                    investigation creation. Assignment and escalation updates do
+                    not change this order.
+                    {coordinationLoaded &&
+                      !loading &&
+                      !coordinationCursor &&
+                      " All available coordinated cases loaded."}
+                  </p>
+                  {coordinationCursor && (
+                    <button
+                      className="button secondary"
+                      disabled={loading || busy || coordinationLoading}
+                      onClick={() => void loadOlderCoordinatedCases()}
+                    >
+                      {coordinationLoading
+                        ? "Loading older coordinated cases…"
+                        : "Load older coordinated cases"}
+                    </button>
+                  )}
+                </div>
               </section>
               {detailLoading ? (
                 <section className="panel">
@@ -2443,7 +2611,9 @@ export default function Page() {
                 <div className="panel-heading">
                   <div>
                     <h2>Incidents in your scope</h2>
-                    <p>Saved incident work, severity and current assignee</p>
+                    <p>
+                      Saved incident work · Newest first by incident creation
+                    </p>
                   </div>
                   <span className="pill">{incidents.length} loaded</span>
                 </div>
@@ -2474,8 +2644,8 @@ export default function Page() {
                               : "Unassigned"}
                           </span>
                           <span className="incident-meta">
-                            Source INV-{short(item.investigation_id)} ·{" "}
-                            {date(item.updated_at)}
+                            Source INV-{short(item.investigation_id)} · Created{" "}
+                            {date(item.created_at)}
                           </span>
                         </span>
                         <Icon name="arrow" size={16} />
@@ -2489,9 +2659,31 @@ export default function Page() {
                     text="Open a collected investigation and create an incident to track its work and resolution."
                   />
                 )}
-                <p className="incident-list-limit">
-                  Up to 50 incidents in your current case scope.
-                </p>
+                <div
+                  className="history-footer queue-footer"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <p>
+                    {incidents.length} loaded · Newest first by incident
+                    creation. Status updates do not change this order.
+                    {incidentLoaded &&
+                      !loading &&
+                      !incidentCursor &&
+                      " All available incidents loaded."}
+                  </p>
+                  {incidentCursor && (
+                    <button
+                      className="button secondary"
+                      disabled={loading || busy || incidentLoading}
+                      onClick={() => void loadOlderIncidents()}
+                    >
+                      {incidentLoading
+                        ? "Loading older incidents…"
+                        : "Load older incidents"}
+                    </button>
+                  )}
+                </div>
               </section>
               {detailLoading ? (
                 <section className="panel">

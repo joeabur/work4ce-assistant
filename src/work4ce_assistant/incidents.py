@@ -32,6 +32,11 @@ class IncidentService:
         return self.repository.list(context.tenant_id,context.subject,
             all_cases=self.policy._all_cases(context),limit=limit)
 
+    def page(self, context: ExecutionContext, *, limit: int=50,cursor: str | None=None) -> dict:
+        self.policy._authorize(context)
+        return self.repository.page(context.tenant_id,context.subject,
+            all_cases=self.policy._all_cases(context),limit=limit,cursor=cursor)
+
     def activity(self, context: ExecutionContext, identity: str) -> list[dict]:
         self.policy._authorize(context)
         return self.repository.activity(context.tenant_id,context.subject,identity,

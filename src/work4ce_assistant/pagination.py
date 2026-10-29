@@ -63,3 +63,37 @@ def decode_history_cursor(cursor: str, tenant: str, subject: str | None) -> tupl
         return value['created_at'],value['id']
     except (ValueError,TypeError,AttributeError,RecursionError):
         raise Work4ceError('invalid_history_cursor',422) from None
+
+
+def encode_queue_cursor(kind: str, tenant: str, subject: str | None, created_at: str, identity: str) -> str:
+    try:
+        if not isinstance(kind,str) or kind not in {'cases','incidents'}:
+            raise ValueError('Unsupported queue')
+        _anchor(created_at,identity)
+        scope=digest({'kind':kind,'tenant':tenant,'subject':subject})
+        raw=canonical({'v':1,'kind':kind,'scope':scope,'created_at':created_at,'id':identity}).encode()
+        return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
+    except (ValueError,TypeError,AttributeError):
+        raise Work4ceError('queue_position_invalid',500) from None
+
+
+def decode_queue_cursor(cursor: str, kind: str, tenant: str, subject: str | None) -> tuple[str,str]:
+    try:
+        if (not isinstance(kind,str) or kind not in {'cases','incidents'}
+                or not isinstance(cursor,str) or not 1 <= len(cursor) <= MAX_CURSOR_LENGTH
+                or re.fullmatch(r'[A-Za-z0-9_-]+',cursor) is None):
+            raise ValueError('Invalid queue cursor')
+        raw=base64.b64decode(cursor+'='*(-len(cursor)%4),altchars=b'-_',validate=True)
+        if base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')!=cursor:
+            raise ValueError('Noncanonical encoding')
+        value=json.loads(raw.decode('utf-8'),object_pairs_hook=_unique_object,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Invalid constant')))
+        if (not isinstance(value,dict) or set(value)!={'v','kind','scope','created_at','id'}
+                or type(value['v']) is not int or value['v']!=1 or value['kind']!=kind
+                or not isinstance(value['scope'],str)
+                or value['scope']!=digest({'kind':kind,'tenant':tenant,'subject':subject})):
+            raise ValueError('Invalid queue cursor fields or scope')
+        _anchor(value['created_at'],value['id'])
+        return value['created_at'],value['id']
+    except (ValueError,TypeError,AttributeError,RecursionError):
+        raise Work4ceError('invalid_queue_cursor',422) from None
