@@ -27,7 +27,7 @@ from sqlalchemy.pool import StaticPool
 
 from .contracts import Work4ceError, canonical, digest
 
-HEAD = "0003_models"
+HEAD = "0004_reviews"
 metadata = MetaData()
 investigations = Table("investigations", metadata,
     Column("id", Text, primary_key=True), Column("tenant", Text, nullable=False),
@@ -55,7 +55,8 @@ workflow_state = Table("workflow_state", metadata,
     Column("state", Text, nullable=False), Column("lease_owner", Text), Column("lease_until", Float),
     Column("revision", Integer, nullable=False), Column("reasoning_config_hash", Text),
     Column("model_limits_hash", Text), Column("max_model_calls", Integer),
-    Column("max_model_tokens", Integer), Column("max_model_cost_microusd", Integer))
+    Column("max_model_tokens", Integer), Column("max_model_cost_microusd", Integer),
+    Column("review_required", Integer, nullable=False, server_default="0"))
 model_attempts = Table("model_attempts", metadata,
     Column("id", Text, primary_key=True), Column("workflow_id", Text, ForeignKey("workflow_state.id"), nullable=False),
     Column("tenant", Text, nullable=False), Column("subject", Text, nullable=False),
@@ -65,6 +66,20 @@ model_attempts = Table("model_attempts", metadata,
     Column("reserved_tokens", Integer, nullable=False), Column("reserved_cost_microusd", Integer, nullable=False),
     Column("actual_input_tokens", Integer), Column("actual_output_tokens", Integer),
     Column("actual_cost_microusd", Integer), Column("error_code", Text), Column("completion_revision", Integer))
+report_reviews = Table("report_reviews", metadata,
+    Column("investigation_id", Text, ForeignKey("investigations.id"), primary_key=True),
+    Column("review_id", Text, nullable=False), Column("tenant", Text, nullable=False),
+    Column("requester", Text, nullable=False), Column("report_hash", Text, nullable=False),
+    Column("state", Text, nullable=False), Column("expires_at", Float, nullable=False),
+    Column("reviewer", Text), Column("comment", Text))
+response_approvals = Table("response_approvals", metadata,
+    Column("id", Text, primary_key=True), Column("investigation_id", Text, ForeignKey("investigations.id"), nullable=False),
+    Column("tenant", Text, nullable=False), Column("requester", Text, nullable=False),
+    Column("report_hash", Text, nullable=False), Column("action", Text, nullable=False),
+    Column("target", Text, nullable=False), Column("parameters", Text, nullable=False),
+    Column("request_hash", Text, nullable=False), Column("state", Text, nullable=False),
+    Column("expires_at", Float, nullable=False), Column("approver", Text), Column("approval_id", Text),
+    Column("decision_comment", Text), Column("simulation_result", Text), Column("simulation_result_hash", Text))
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -222,6 +237,10 @@ class Store:
                 workflow_state.c.id == identity, workflow_state.c.tenant == tenant)).first()
             if managed is not None:
                 raise Work4ceError("workflow_lease_required", 409)
+            reviewed = connection.execute(select(report_reviews.c.investigation_id).where(
+                report_reviews.c.investigation_id == identity, report_reviews.c.tenant == tenant)).first()
+            if reviewed is not None:
+                raise Work4ceError("reviewed_report_immutable",409)
             cursor = connection.execute(update(investigations).where(investigations.c.id == identity, investigations.c.tenant == tenant).values(status=status, report=canonical(report), report_hash=digest(report), updated_at=now()))
             if cursor.rowcount != 1:
                 raise Work4ceError("investigation_not_found", 404)
@@ -229,16 +248,15 @@ class Store:
 
     def get(self, tenant: str, identity: str) -> dict[str, Any]:
         with self._connection() as connection:
-            row = connection.execute(select(investigations.c.status, investigations.c.report, investigations.c.report_hash).where(investigations.c.tenant == tenant, investigations.c.id == identity)).first()
-        if row is None:
-            raise Work4ceError("investigation_not_found", 404)
-        try:
-            report = json.loads(row.report) if row.report else None
-            if report is not None and digest(report) != row.report_hash:
-                raise ValueError("hash mismatch")
-        except (ValueError, TypeError):
-            raise Work4ceError("report_integrity_failure", 500) from None
-        return {"id": identity, "status": row.status, "report": report}
+            row, report = self._load_report(connection, tenant, identity)
+            output = {"id": identity, "status": row.status, "report": report}
+            review = connection.execute(select(report_reviews).where(report_reviews.c.tenant == tenant,
+                report_reviews.c.investigation_id == identity)).first()
+            if review is not None:
+                data = self._validate_review(review, row)
+                output["review"] = data
+                output["status"] = {"pending":"awaiting_review", "approved":"completed", "rejected":"review_rejected"}[data["state"]]
+            return output
 
     def enabled(self, tenant: str, connector_id: str) -> bool:
         with self._connection() as connection:
@@ -300,7 +318,7 @@ class Store:
 
     def create_workflow(self, tenant: str, subject: str, query: str, limit: int, idempotency_key: str,
                         *, max_tool_calls: int = 2, duration_seconds: float = 120,
-                        reasoning_config_hash: str | None = None) -> dict[str, Any]:
+                        reasoning_config_hash: str | None = None, review_required: bool = False) -> dict[str, Any]:
         if (not all(isinstance(value, str) and 1 <= len(value) <= 200 for value in (tenant, query))
                 or not isinstance(subject, str) or not 1 <= len(subject) <= 256
                 or not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128
@@ -310,6 +328,8 @@ class Store:
                 or type(duration_seconds) not in (int, float) or not math.isfinite(duration_seconds)
                 or not 0 < duration_seconds <= 600):
             raise Work4ceError("invalid_workflow_request", 422)
+        if type(review_required) is not bool:
+            raise Work4ceError("invalid_workflow_request", 422)
         if reasoning_config_hash is not None and not self._valid_model_hash(reasoning_config_hash):
             raise Work4ceError("invalid_workflow_request", 422)
         request_data = {"query": query, "limit": limit, "max_tool_calls": max_tool_calls,
@@ -317,6 +337,8 @@ class Store:
         # Omit the key for existing deterministic v2 idempotency compatibility.
         if reasoning_config_hash is not None:
             request_data["reasoning_config_hash"] = reasoning_config_hash
+        if review_required:
+            request_data["review_required"] = True
         request_hash = digest(request_data)
         identity = str(uuid4())
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -350,7 +372,7 @@ class Store:
                 created = connection.execute(insert(workflow_state).values(id=identity, tenant=tenant,
                     subject=subject, idempotency_key=idempotency_key, request_hash=request_hash, query=query,
                     limit=limit, max_tool_calls=max_tool_calls, tool_calls=0, deadline=time.time() + duration_seconds,
-                    state="queued", revision=0, reasoning_config_hash=reasoning_config_hash).on_conflict_do_nothing(
+                    state="queued", revision=0, reasoning_config_hash=reasoning_config_hash, review_required=int(review_required)).on_conflict_do_nothing(
                         index_elements=["tenant", "subject", "idempotency_key"]).returning(workflow_state.c.id)).scalar()
                 if created is None:
                     raise _IdempotencyRace()
@@ -469,6 +491,8 @@ class Store:
             self._cas_workflow(connection, row, require_worker=worker, allow_expired_deadline=(status == "failed"),
                                state=status, lease_owner=None, lease_until=None)
             self._write_workflow_report(connection, row, report, status)
+            if status == "completed" and row["review_required"]:
+                self._request_review(connection, tenant, subject, identity, lifetime_seconds=300)
 
     def cancel_workflow(self, tenant: str, subject: str, identity: str) -> dict[str, Any]:
         with self._connection(write=True) as connection:
@@ -639,6 +663,324 @@ class Store:
             if changed.rowcount != 1:
                 raise Work4ceError("model_attempt_terminal", 409)
             self._audit(connection, tenant, subject, "model.fail", identity, "failed")
+
+    def _load_report(self, connection: Connection, tenant: str, identity: str,
+                     requester: str | None = None, *, lock: bool = False):
+        statement = select(investigations).where(investigations.c.tenant == tenant, investigations.c.id == identity)
+        if requester is not None:
+            statement = statement.where(investigations.c.subject == requester)
+        if lock:
+            statement = statement.with_for_update()
+        row = connection.execute(statement).first()
+        if row is None:
+            raise Work4ceError("investigation_not_found", 404)
+        try:
+            report = json.loads(row.report) if row.report else None
+            if report is not None and digest(report) != row.report_hash:
+                raise ValueError("report hash mismatch")
+        except (ValueError, TypeError, RecursionError):
+            raise Work4ceError("report_integrity_failure", 500) from None
+        return row, report
+
+    @staticmethod
+    def _validate_lifetime(lifetime_seconds: float) -> None:
+        if type(lifetime_seconds) not in (int, float) or not math.isfinite(lifetime_seconds) or not 1 <= lifetime_seconds <= 900:
+            raise Work4ceError("invalid_approval_lifetime", 422)
+
+    @staticmethod
+    def _validate_decision(decision: str, comment: str) -> None:
+        if not isinstance(decision, str) or decision not in {"approved", "rejected"} or not isinstance(comment, str) or len(comment) > 2000:
+            raise Work4ceError("invalid_review_decision", 422)
+
+    @staticmethod
+    def _validate_review(review, report_row) -> dict[str, Any]:
+        data = dict(review._mapping) if hasattr(review, '_mapping') else dict(review)
+        if (data["report_hash"] != report_row.report_hash or data["requester"] != report_row.subject
+                or report_row.status != "completed"):
+            raise Work4ceError("review_report_mismatch", 409)
+        return data
+
+    def _review(self, connection: Connection, tenant: str, identity: str, *, lock: bool = False):
+        row, report = self._load_report(connection, tenant, identity, lock=lock)
+        statement = select(report_reviews).where(report_reviews.c.tenant == tenant, report_reviews.c.investigation_id == identity)
+        if lock:
+            statement = statement.with_for_update()
+        review = connection.execute(statement).first()
+        if review is None:
+            raise Work4ceError("review_not_found", 404)
+        return self._validate_review(review, row), row, report
+
+    def _request_review(self, connection: Connection, tenant: str, requester: str, identity: str,
+                        *, lifetime_seconds: float) -> dict[str, Any]:
+        row, report = self._load_report(connection, tenant, identity, requester, lock=True)
+        if row.status != "completed" or not isinstance(report, dict):
+            raise Work4ceError("review_report_incomplete", 409)
+        statement = select(report_reviews).where(report_reviews.c.tenant == tenant,
+            report_reviews.c.investigation_id == identity).with_for_update()
+        current = connection.execute(statement).first()
+        instant = time.time()
+        if current is not None:
+            data = self._validate_review(current, row)
+            if data["state"] != "pending" or data["expires_at"] > instant:
+                return data
+            identity_filter = and_(report_reviews.c.investigation_id == identity,
+                report_reviews.c.tenant == tenant, report_reviews.c.review_id == data["review_id"],
+                report_reviews.c.state == "pending", report_reviews.c.expires_at <= instant)
+            changed = connection.execute(update(report_reviews).where(identity_filter).values(
+                review_id=str(uuid4()), expires_at=instant + lifetime_seconds, reviewer=None, comment=None))
+            if changed.rowcount != 1:
+                raise Work4ceError("review_conflict", 409)
+        else:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+            insert = sqlite_insert if self.engine.dialect.name == "sqlite" else pg_insert
+            connection.execute(insert(report_reviews).values(investigation_id=identity, review_id=str(uuid4()),
+                tenant=tenant, requester=requester, report_hash=row.report_hash, state="pending",
+                expires_at=instant + lifetime_seconds).on_conflict_do_nothing(index_elements=["investigation_id"]))
+        self._audit(connection, tenant, requester, "review.request", identity, "pending")
+        result = connection.execute(select(report_reviews).where(report_reviews.c.tenant == tenant,
+            report_reviews.c.investigation_id == identity)).one()
+        return self._validate_review(result, row)
+
+    def request_review(self, tenant: str, requester: str, identity: str,
+                       *, lifetime_seconds: float = 300) -> dict[str, Any]:
+        self._validate_lifetime(lifetime_seconds)
+        with self._connection(write=True) as connection:
+            return self._request_review(connection, tenant, requester, identity, lifetime_seconds=lifetime_seconds)
+
+    def get_review(self, tenant: str, identity: str) -> dict[str, Any]:
+        with self._connection() as connection:
+            return self._review(connection, tenant, identity)[0]
+
+    def list_reviews(self, tenant: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise Work4ceError("invalid_queue_limit",422)
+        with self._connection() as connection:
+            identities = connection.execute(select(report_reviews.c.investigation_id).where(
+                report_reviews.c.tenant == tenant).order_by(
+                    case((report_reviews.c.state == "pending",0),else_=1),report_reviews.c.expires_at,
+                    report_reviews.c.investigation_id).limit(limit)).scalars().all()
+            return [self._review(connection,tenant,identity)[0] for identity in identities]
+
+    def decide_review(self, tenant: str, reviewer: str, identity: str, review_id: str,
+                      decision: str, comment: str = '') -> dict[str, Any]:
+        self._validate_decision(decision, comment)
+        with self._connection(write=True) as connection:
+            review, _, _ = self._review(connection, tenant, identity, lock=True)
+            if reviewer == review["requester"]:
+                raise Work4ceError("separation_of_duties", 403)
+            if review["review_id"] != review_id:
+                raise Work4ceError("review_mismatch", 409)
+            if review["state"] != "pending":
+                raise Work4ceError("review_terminal", 409)
+            instant = time.time()
+            if review["expires_at"] <= instant:
+                raise Work4ceError("review_expired", 409)
+            changed = connection.execute(update(report_reviews).where(report_reviews.c.tenant == tenant,
+                report_reviews.c.investigation_id == identity, report_reviews.c.review_id == review_id,
+                report_reviews.c.state == "pending", report_reviews.c.expires_at > instant).values(
+                    state=decision, reviewer=reviewer, comment=comment))
+            if changed.rowcount != 1:
+                raise Work4ceError("review_conflict", 409)
+            self._audit(connection, tenant, reviewer, "review.decide", identity, decision)
+            return self._review(connection, tenant, identity)[0]
+
+    @staticmethod
+    def _response_payload(tenant: str, requester: str, identity: str, report_hash: str,
+                          action: str, target: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        return {"tenant":tenant, "requester":requester, "investigation_id":identity, "report_hash":report_hash,
+                "action":action, "target":target, "parameters":parameters}
+
+    @staticmethod
+    def _validate_response_parameters(action: str, target: str, parameters: dict[str, Any]) -> None:
+        try:
+            if (action != "endpoint.isolate" or target not in {"demo-host-1", "demo-host-2"}
+                    or not isinstance(parameters, dict) or set(parameters) != {"duration_minutes"}
+                    or type(parameters["duration_minutes"]) is not int or not 1 <= parameters["duration_minutes"] <= 60
+                    or len(canonical(parameters).encode()) > 4096):
+                raise ValueError("unsupported simulation")
+        except (ValueError, TypeError, RecursionError):
+            raise Work4ceError("invalid_response_request", 422) from None
+
+    def _approved_report(self, connection: Connection, tenant: str, identity: str, requester: str | None = None):
+        report_row, report = self._load_report(connection, tenant, identity, requester, lock=True)
+        if report_row.status != "completed" or not isinstance(report, dict) or report.get("synthetic") is not True:
+            raise Work4ceError("response_requires_synthetic_report", 403)
+        review, _, _ = self._review(connection, tenant, identity, lock=True)
+        if review["state"] != "approved":
+            raise Work4ceError("report_review_required", 403)
+        return report_row, report
+
+    def create_response(self, tenant: str, requester: str, investigation_id: str, action: str, target: str,
+                        parameters: dict[str, Any], *, lifetime_seconds: float = 300) -> dict[str, Any]:
+        self._validate_lifetime(lifetime_seconds)
+        self._validate_response_parameters(action, target, parameters)
+        if not all(isinstance(value, str) and 1 <= len(value) <= maximum for value, maximum in ((tenant,200),(requester,256))):
+            raise Work4ceError("invalid_response_request", 422)
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        insert = sqlite_insert if self.engine.dialect.name == "sqlite" else pg_insert
+        identity = str(uuid4())
+        with self._connection(write=True) as connection:
+            connection.execute(insert(workflow_owner_locks).values(tenant=tenant,subject=requester)
+                .on_conflict_do_nothing(index_elements=["tenant","subject"]))
+            connection.execute(select(workflow_owner_locks).where(workflow_owner_locks.c.tenant == tenant,
+                workflow_owner_locks.c.subject == requester).with_for_update()).one()
+            report_row, _ = self._approved_report(connection, tenant, investigation_id, requester)
+            pending = connection.execute(select(func.count()).select_from(response_approvals).where(
+                response_approvals.c.tenant == tenant, response_approvals.c.requester == requester,
+                response_approvals.c.state.in_(["pending","approved"]))).scalar_one()
+            if pending >= 100:
+                raise Work4ceError("response_queue_full", 429)
+            request_hash = digest(self._response_payload(tenant,requester,investigation_id,report_row.report_hash,action,target,parameters))
+            connection.execute(response_approvals.insert().values(id=identity,investigation_id=investigation_id,
+                tenant=tenant,requester=requester,report_hash=report_row.report_hash,action=action,target=target,
+                parameters=canonical(parameters),request_hash=request_hash,state="pending",expires_at=time.time()+lifetime_seconds))
+            self._audit(connection,tenant,requester,"response.create",identity,"pending")
+            return self._response(connection,tenant,identity)
+
+    def _response(self, connection: Connection, tenant: str, identity: str, *, lock: bool = False) -> dict[str, Any]:
+        if lock and connection.dialect.name == "sqlite":
+            # SQLite ignores FOR UPDATE. Start its serialized write transaction
+            # before validating report/approval/source state so another Store
+            # cannot revoke a source between validation and consumption.
+            connection.execute(update(response_approvals).where(response_approvals.c.tenant == tenant,
+                response_approvals.c.id == identity).values(state=response_approvals.c.state))
+        statement = select(response_approvals).where(response_approvals.c.tenant == tenant,response_approvals.c.id == identity)
+        if lock:
+            statement = statement.with_for_update()
+        row = connection.execute(statement).first()
+        if row is None:
+            raise Work4ceError("response_not_found",404)
+        data = dict(row._mapping)
+        try:
+            if len(data["parameters"].encode()) > 4096:
+                raise ValueError("parameters too large")
+            parameters = json.loads(data["parameters"])
+            self._validate_response_parameters(data["action"],data["target"],parameters)
+            expected = digest(self._response_payload(tenant,data["requester"],data["investigation_id"],
+                data["report_hash"],data["action"],data["target"],parameters))
+            if data["request_hash"] != expected:
+                raise ValueError("response request mismatch")
+            data["parameters"] = parameters
+            if data["simulation_result"] is not None:
+                if len(data["simulation_result"].encode()) > 8192:
+                    raise ValueError("simulation result too large")
+                result = json.loads(data["simulation_result"])
+                expected_result = {"dry_run":True,"performed":False,"action":data["action"],"target":data["target"],
+                    "parameters":parameters,"approval_id":data["approval_id"],
+                    "investigation_id":data["investigation_id"],"report_hash":data["report_hash"]}
+                if digest(result) != data["simulation_result_hash"] or result != expected_result or data["state"] != "consumed":
+                    raise ValueError("simulation result mismatch")
+                data["simulation_result"] = result
+            elif data["simulation_result_hash"] is not None:
+                raise ValueError("missing simulation result")
+        except (ValueError,TypeError,RecursionError,Work4ceError):
+            raise Work4ceError("response_integrity_failure",500) from None
+        report_row, _ = self._load_report(connection,tenant,data["investigation_id"],data["requester"],lock=lock)
+        if report_row.report_hash != data["report_hash"]:
+            raise Work4ceError("response_report_mismatch",409)
+        return data
+
+    def get_response(self, tenant: str, identity: str) -> dict[str, Any]:
+        with self._connection() as connection:
+            return self._response(connection,tenant,identity)
+
+    def list_responses(self, tenant: str, *, requester: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        if (type(limit) is not int or not 1 <= limit <= 100
+                or requester is not None and (not isinstance(requester,str) or not 1 <= len(requester) <= 256)):
+            raise Work4ceError("invalid_queue_limit",422)
+        statement = select(response_approvals.c.id).where(response_approvals.c.tenant == tenant)
+        if requester is not None:
+            statement = statement.where(response_approvals.c.requester == requester)
+        with self._connection() as connection:
+            identities = connection.execute(statement.order_by(response_approvals.c.expires_at,
+                response_approvals.c.id).limit(limit)).scalars().all()
+            return [self._response(connection,tenant,identity) for identity in identities]
+
+    def decide_response(self, tenant: str, reviewer: str, identity: str, decision: str,
+                        comment: str = '') -> dict[str, Any]:
+        self._validate_decision(decision,comment)
+        with self._connection(write=True) as connection:
+            row = self._response(connection,tenant,identity,lock=True)
+            self._approved_report(connection,tenant,row["investigation_id"],row["requester"])
+            if reviewer == row["requester"]:
+                raise Work4ceError("separation_of_duties",403)
+            if row["state"] != "pending":
+                raise Work4ceError("response_terminal",409)
+            instant = time.time()
+            if row["expires_at"] <= instant:
+                raise Work4ceError("approval_expired",409)
+            changed = connection.execute(update(response_approvals).where(response_approvals.c.tenant == tenant,
+                response_approvals.c.id == identity,response_approvals.c.state == "pending",
+                response_approvals.c.expires_at > instant).values(state=decision,approver=reviewer,
+                    approval_id=str(uuid4()) if decision == "approved" else None,decision_comment=comment))
+            if changed.rowcount != 1:
+                raise Work4ceError("response_conflict",409)
+            self._audit(connection,tenant,reviewer,"response.decide",identity,decision)
+            return self._response(connection,tenant,identity)
+
+    def revoke_response(self, tenant: str, identity: str, actor: str) -> dict[str, Any]:
+        with self._connection(write=True) as connection:
+            row = self._response(connection,tenant,identity,lock=True)
+            if row["state"] in {"revoked","rejected"}:
+                return row
+            if row["state"] == "consumed":
+                raise Work4ceError("approval_reused",409)
+            changed = connection.execute(update(response_approvals).where(response_approvals.c.tenant == tenant,
+                response_approvals.c.id == identity,response_approvals.c.state.in_(["pending","approved"])).values(state="revoked"))
+            if changed.rowcount != 1:
+                raise Work4ceError("response_conflict",409)
+            self._audit(connection,tenant,actor,"response.revoke",identity,"revoked")
+            return self._response(connection,tenant,identity)
+
+    def consume_response(self, tenant: str, requester: str, identity: str, approval_id: str) -> dict[str, Any]:
+        with self._connection(write=True) as connection:
+            # Filter ownership before decoding potentially sensitive request data.
+            owned = connection.execute(select(response_approvals.c.id).where(response_approvals.c.tenant == tenant,
+                response_approvals.c.id == identity,response_approvals.c.requester == requester)).first()
+            if owned is None:
+                raise Work4ceError("response_not_found",404)
+            row = self._response(connection,tenant,identity,lock=True)
+            _, report = self._approved_report(connection,tenant,row["investigation_id"],requester)
+            if row["state"] == "consumed":
+                raise Work4ceError("approval_reused",409)
+            if row["state"] != "approved":
+                raise Work4ceError("approval_required",403)
+            if not isinstance(approval_id,str) or not approval_id or approval_id != row["approval_id"]:
+                raise Work4ceError("approval_mismatch",403)
+            instant = time.time()
+            if row["expires_at"] <= instant:
+                raise Work4ceError("approval_expired",409)
+            if not row["approver"] or row["approver"] == requester:
+                raise Work4ceError("separation_of_duties",403)
+            # Root policy checks allowlists and manifest integrity. This final
+            # database fence also serializes concurrent connector disablement.
+            evidence = report.get("evidence", [])
+            if not isinstance(evidence,list):
+                raise Work4ceError("response_connector_unavailable",403)
+            source_ids = set()
+            for item in evidence:
+                if not isinstance(item,dict) or not isinstance(item.get("connector_id"),str) or not item["connector_id"]:
+                    raise Work4ceError("response_connector_unavailable",403)
+                source_ids.add(item["connector_id"])
+            for source_id in sorted(source_ids):
+                source = connection.execute(select(connector_state.c.enabled).where(connector_state.c.tenant == tenant,
+                    connector_state.c.id == source_id).with_for_update()).scalar()
+                if source != 1:
+                    raise Work4ceError("response_connector_unavailable",403)
+            result = {"dry_run":True,"performed":False,"action":row["action"],"target":row["target"],
+                      "parameters":row["parameters"],"approval_id":approval_id,
+                      "investigation_id":row["investigation_id"],"report_hash":row["report_hash"]}
+            changed = connection.execute(update(response_approvals).where(response_approvals.c.tenant == tenant,
+                response_approvals.c.requester == requester,response_approvals.c.id == identity,
+                response_approvals.c.state == "approved",response_approvals.c.approval_id == approval_id,
+                response_approvals.c.expires_at > instant).values(state="consumed",simulation_result=canonical(result),
+                    simulation_result_hash=digest(result)))
+            if changed.rowcount != 1:
+                raise Work4ceError("approval_reused",409)
+            self._audit(connection,tenant,requester,"response.simulate",identity,"consumed")
+            return self._response(connection,tenant,identity)
 
     def close(self) -> None:
         with self._lock:

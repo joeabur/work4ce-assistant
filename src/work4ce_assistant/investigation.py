@@ -39,7 +39,7 @@ class Checkpoint(BaseModel):
 
 
 class Investigator:
-    def __init__(self, gateway: Gateway, store: Store, *, max_tool_calls: int = 2, duration_seconds: float = 120, reasoner: Reasoner | None = None):
+    def __init__(self, gateway: Gateway, store: Store, *, max_tool_calls: int = 2, duration_seconds: float = 120, reasoner: Reasoner | None = None, require_review: bool = False):
         if type(max_tool_calls) is not int or not 1 <= max_tool_calls <= 8:
             raise ValueError("Tool-call budget must be 1..8")
         if type(duration_seconds) not in (int, float) or not .01 <= duration_seconds <= 600:
@@ -47,6 +47,9 @@ class Investigator:
         self.gateway, self.store = gateway, store
         if reasoner is not None and reasoner.store is not store:
             raise ValueError("Reasoning and investigations must use the same scoped store")
+        if type(require_review) is not bool:
+            raise ValueError("Review requirement must be an explicit boolean")
+        self.require_review = require_review
         self.reasoner = reasoner
         self.max_tool_calls, self.duration_seconds = max_tool_calls, duration_seconds
 
@@ -64,7 +67,8 @@ class Investigator:
             raise Work4ceError("invalid_idempotency_key", 422)
         return self.store.create_workflow(context.tenant_id, context.subject, query, limit, key,
                                           max_tool_calls=self.max_tool_calls, duration_seconds=self.duration_seconds,
-                                          reasoning_config_hash=self.reasoner.config_hash if self.reasoner else None)
+                                          reasoning_config_hash=self.reasoner.config_hash if self.reasoner else None,
+                                          review_required=self.require_review)
 
     async def investigate(self, context: ExecutionContext, query: str, limit: int = 20, *, idempotency_key: str | None = None) -> dict[str, Any]:
         state = self.enqueue(context, query, limit, idempotency_key=idempotency_key)
@@ -95,6 +99,8 @@ class Investigator:
     async def resume(self, context: ExecutionContext, identity: str) -> dict[str, Any]:
         self._authorize(context)
         state = self.store.get_workflow(context.tenant_id, context.subject, identity)
+        if bool(state["review_required"]) != self.require_review:
+            raise Work4ceError("review_configuration_changed",409)
         if state["reasoning_config_hash"] != (self.reasoner.config_hash if self.reasoner else None):
             raise Work4ceError("model_configuration_changed", 409)
         if state["state"] == "completed":

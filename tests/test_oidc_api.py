@@ -131,3 +131,13 @@ class OIDCAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         self.fail('Startup must fail')
                 close_store.assert_called_once()
         stub.close.assert_awaited_once()
+
+    async def test_reviewer_role_has_review_grants_without_execution_grants(self):
+        from dataclasses import replace
+        settings=replace(self.settings,oidc_subject_roles=(('reviewer-sub','reviewer'),))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            headers=self.headers('reviewer-sub',roles=['admin'])
+            self.assertEqual((await client.get('/reviews',headers=headers)).status_code,200)
+            self.assertEqual((await client.get('/responses',headers=headers)).status_code,200)
+            self.assertEqual((await client.post('/investigations',json={'query':'PowerShell'},headers=headers)).status_code,403)

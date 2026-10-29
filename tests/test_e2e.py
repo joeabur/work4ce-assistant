@@ -57,7 +57,7 @@ class VerticalSliceTests(unittest.TestCase):
             rest_port, api_port = free_port(), free_port()
             analyst, admin = secrets.token_urlsafe(40), secrets.token_urlsafe(40)
             env = {**os.environ, 'WORK4CE_DEMO_TOKEN':analyst, 'WORK4CE_ADMIN_TOKEN':admin,
-                   'WORK4CE_REASONING_MODE':reasoning_mode, 'WORK4CE_AUTH_MODE':'demo', 'WORK4CE_MODE':'demo', 'WORK4CE_DB':database or str(Path(directory)/'demo.db'), 'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}'}
+                   'WORK4CE_REQUIRE_HUMAN_REVIEW':'false', 'WORK4CE_REASONING_MODE':reasoning_mode, 'WORK4CE_AUTH_MODE':'demo', 'WORK4CE_MODE':'demo', 'WORK4CE_DB':database or str(Path(directory)/'demo.db'), 'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}'}
             log = open(Path(directory)/'services.log', 'w+')
             rest = subprocess.Popen([sys.executable,'-m','work4ce_assistant.reference_servers','rest','--port',str(rest_port)],
                                     env=env,stdout=log,stderr=log)
@@ -198,6 +198,42 @@ asyncio.run(run())
                 third = client.post('/investigations',json={'query':'PowerShell'},headers=auth)
                 self.assertEqual(third.status_code,201,third.text)
                 self.assertEqual(third.json()['report']['evidence'][0]['connector_id'],'demo-mcp')
+                # Human review and action approvals persist across independent API
+                # restarts. Simulation consumes one bound approval and performs no action.
+                reviewed_id=third.json()['id']
+                review=client.post('/investigations/'+reviewed_id+'/review',headers=auth)
+                self.assertEqual(review.status_code,200,review.text)
+                review_body={'review_id':review.json()['review_id'],'decision':'approved'}
+                self.assertEqual(client.post('/investigations/'+reviewed_id+'/review/decision',
+                    json=review_body,headers=auth).status_code,403)
+                api.terminate()
+                api.wait(timeout=5)
+                api=start_api()
+                wait('/ready',auth)
+                pending=client.get('/investigations/'+reviewed_id,headers=auth)
+                self.assertEqual(pending.json()['status'],'awaiting_review')
+                self.assertEqual(pending.json()['review']['review_id'],review_body['review_id'])
+                accepted=client.post('/investigations/'+reviewed_id+'/review/decision',json=review_body,headers=administration)
+                self.assertEqual(accepted.status_code,200,accepted.text)
+                proposed=client.post('/responses',json={'investigation_id':reviewed_id,'action':'endpoint.isolate',
+                    'target':'demo-host-1','parameters':{'duration_minutes':15}},headers=auth)
+                self.assertEqual(proposed.status_code,201,proposed.text)
+                response_id=proposed.json()['id']
+                approved=client.post('/responses/'+response_id+'/decision',json={'decision':'approved'},headers=administration)
+                self.assertEqual(approved.status_code,200,approved.text)
+                api.terminate()
+                api.wait(timeout=5)
+                api=start_api()
+                wait('/ready',auth)
+                saved=client.get('/responses/'+response_id,headers=auth)
+                self.assertEqual(saved.json(),approved.json())
+                self.assertEqual(client.post('/responses/'+response_id+'/simulate',json={},headers=auth).status_code,422)
+                use={'approval_id':approved.json()['approval_id']}
+                simulated=client.post('/responses/'+response_id+'/simulate',json=use,headers=auth)
+                self.assertEqual(simulated.status_code,200,simulated.text)
+                self.assertTrue(simulated.json()['simulation_result']['dry_run'])
+                self.assertFalse(simulated.json()['simulation_result']['performed'])
+                self.assertEqual(client.post('/responses/'+response_id+'/simulate',json=use,headers=auth).status_code,409)
                 self.assertEqual(client.post('/connectors/demo-mcp/disable',headers=administration).status_code,200)
                 self.assertEqual(client.get('/ready',headers=auth).status_code,503)
                 self.assertEqual(client.post('/investigations',json={'query':'PowerShell'},headers=auth).status_code,403)

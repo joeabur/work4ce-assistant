@@ -10,7 +10,7 @@ Set these non-secret configuration values in environment settings:
 | `WORK4CE_OIDC_ISSUER` | Exact trusted HTTPS issuer URL |
 | `WORK4CE_OIDC_AUDIENCE` | Dedicated API access-token audience; never reuse the browser application's client ID |
 | `WORK4CE_OIDC_JWKS_URL` | Explicit trusted HTTPS JWKS endpoint, without credentials, query or fragment |
-| `WORK4CE_OIDC_SUBJECT_ROLES` | JSON object mapping approved subject strings to `analyst` or `admin` |
+| `WORK4CE_OIDC_SUBJECT_ROLES` | JSON object mapping approved subject strings to `analyst`, `admin`, or `reviewer` |
 
 An illustrative role mapping is `{"approved-analyst-subject":"analyst","approved-admin-subject":"admin"}`. Replace identifiers with actual approved subjects. Duplicate JSON keys and invalid roles are rejected. No dynamic identity-provider administration is provided.
 
@@ -23,3 +23,5 @@ JWKS is fetched only from the configured URL with TLS verification and inherited
 Before live testing, allow the configured identity-provider hostname through the environment network settings and verify the actual endpoint. No identity-provider secret is required for public JWKS verification. Authenticated subjects receive only server-configured roles, the fixed synthetic tenant and reviewed connector grants. Token-provided roles, permissions or tenant claims cannot elevate access.
 
 Production identity operations, TLS deployment, account lifecycle, broader revocation policy and live-provider interoperability remain pending. JWKS cache validity can retain a removed signing key for up to 300 seconds; short token lifetimes and operational rotation procedures are required.
+
+The `reviewer` role can review reports and approve synthetic response proposals but cannot run investigations, propose actions, simulate responses or administer connectors. Requester self-approval is denied even for an administrator. See the review workflow guide.

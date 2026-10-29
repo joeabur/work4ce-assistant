@@ -69,3 +69,10 @@ Default deadline is 120 seconds from enqueue and default budget is two invocatio
 Introduce a provider contract, an explicitly labelled offline fixture and a configured HTTPS structured chat-completions adapter. The default remains deterministic. A model may select the authorized literal search and exact evidence quotations; it cannot grant permissions, enlarge scope or introduce unsupported facts/verdicts. Backend policy and evidence validation remain authoritative.
 
 Fingerprint route, model, synthetic designation, prompt, schemas, prices and budgets without credential values. Persist reservations before every attempt, retain failed/unknown usage conservatively, and cache validated results by owner/workflow/stage/input/configuration. Migration 0003 preserves prior deterministic workflows. Provider mode requires explicit synthetic-egress consent; payload allowlisting and recognizable credential-pattern rejection are limited admission controls, not enterprise DLP. No cross-provider fallback or live billing guarantee is claimed.
+
+
+## ADR-010 — Human acceptance and synthetic approval consumption
+
+Keep machine collection state separate from a durable human report decision, preserving immutable report/evidence/model usage. An operator may require the gate at creation; owners may request it later. Server-mapped reviewers have distinct grants and cannot self-approve or run the simulation. Public report-read access does not imply permission to private review metadata.
+
+A separate policy service accepts only a bounded synthetic action/target/parameter contract and requires approved immutable report evidence plus a distinct action approval. Consumption locks the bound request, report, review and source connector rows; it checks current authorization, expiry and nonce matching, then atomically records a single dry run. No privilege-bearing response adapter or command is installed. This is an approval-lifecycle test boundary, not a production executor or OS isolation boundary. Live execution must be implemented separately and revalidated before use.

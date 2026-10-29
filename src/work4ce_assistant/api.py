@@ -6,7 +6,8 @@ import json
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, Request, Header
 from fastapi.responses import JSONResponse
@@ -21,11 +22,16 @@ from .gateway import Gateway
 from .investigation import Investigator
 from .models import FixtureProvider, OpenAICompatibleProvider, ModelGateway
 from .reasoning import Reasoner
+from .reviews import ReviewService
 from .storage import Store
 
 TENANT = "synthetic-demo"
 CONNECTORS = frozenset({"demo-rest", "demo-mcp"})
-PERMISSIONS = frozenset({"events:read", "investigations:run", "investigations:read"})
+PERMISSIONS = frozenset({"events:read", "investigations:run", "investigations:read",
+                         "responses:read", "responses:propose", "responses:simulate"})
+ADMIN_PERMISSIONS = frozenset({"connectors:admin", "investigations:review", "responses:approve"})
+REVIEWER_PERMISSIONS = frozenset({"events:read", "investigations:read", "investigations:review",
+                                "responses:read", "responses:approve"})
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,7 @@ class Settings:
     oidc_subject_roles: tuple[tuple[str, str], ...] = ()
     workflow_max_tool_calls: int = 2
     workflow_duration_seconds: float = 120
+    require_human_review: bool = False
     reasoning_mode: str = "deterministic"
     model_endpoint: str = ""
     model_name: str = ""
@@ -58,6 +65,8 @@ class Settings:
                 or type(self.workflow_duration_seconds) not in (int, float)
                 or not .01 <= self.workflow_duration_seconds <= 600):
             raise ValueError("Workflow budgets require 1..8 tool calls and .01..600 seconds")
+        if type(self.require_human_review) is not bool:
+            raise ValueError("Human review requirement must be an explicit boolean")
         if self.reasoning_mode not in {"deterministic", "fixture", "provider"}:
             raise ValueError("WORK4CE_REASONING_MODE must be deterministic, fixture or provider")
         if (type(self.max_model_calls) is not int or not 1 <= self.max_model_calls <= 8
@@ -100,7 +109,7 @@ class Settings:
             seen = set()
             for subject, role in self.oidc_subject_roles:
                 if (not isinstance(subject, str) or not 1 <= len(subject) <= 256
-                        or subject in seen or not isinstance(role, str) or role not in {"analyst", "admin"}):
+                        or subject in seen or not isinstance(role, str) or role not in {"analyst", "admin", "reviewer"}):
                     raise ValueError("Invalid or duplicate OIDC subject role mapping")
                 seen.add(subject)
         # Validate destination before startup, without making a network request.
@@ -108,6 +117,9 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
+        review_flag=os.environ.get("WORK4CE_REQUIRE_HUMAN_REVIEW", "false")
+        if review_flag not in {"true", "false"}:
+            raise ValueError("WORK4CE_REQUIRE_HUMAN_REVIEW must be true or false")
         auth_mode = os.environ.get("WORK4CE_AUTH_MODE", "demo")
         config = None
         roles = ()
@@ -128,7 +140,7 @@ class Settings:
                     raise ValueError()
                 roles = tuple(value.items())
             except (TypeError, ValueError):
-                raise ValueError("WORK4CE_OIDC_SUBJECT_ROLES must be a JSON object mapping subjects to analyst/admin") from None
+                raise ValueError("WORK4CE_OIDC_SUBJECT_ROLES must be a JSON object mapping subjects to analyst/admin/reviewer") from None
         return cls(demo_token=os.environ.get("WORK4CE_DEMO_TOKEN", ""),
                    admin_token=os.environ.get("WORK4CE_ADMIN_TOKEN", ""),
                    database=os.environ.get("WORK4CE_DB", ".local/work4ce.db"),
@@ -137,6 +149,7 @@ class Settings:
                    auth_mode=auth_mode, oidc_config=config, oidc_subject_roles=roles,
                    workflow_max_tool_calls=int(os.environ.get("WORK4CE_MAX_TOOL_CALLS", "2")),
                    workflow_duration_seconds=float(os.environ.get("WORK4CE_INVESTIGATION_TIMEOUT_SECONDS", "120")),
+                   require_human_review=(review_flag == "true"),
                    reasoning_mode=os.environ.get("WORK4CE_REASONING_MODE", "deterministic"),
                    model_endpoint=os.environ.get("WORK4CE_MODEL_ENDPOINT", ""),
                    model_name=os.environ.get("WORK4CE_MODEL_NAME", ""),
@@ -187,6 +200,35 @@ class InvestigationRequest(BaseModel):
     defer: bool = False
 
 
+class Decision(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    decision: Literal["approved","rejected"]
+    comment: str = Field(default="",max_length=2000)
+
+
+class ReviewDecision(Decision):
+    review_id: UUID = Field(strict=False)
+
+
+class SimulationParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    duration_minutes: int = Field(ge=1,le=60)
+
+
+class ResponseProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    investigation_id: UUID = Field(strict=False)
+    action: Literal["endpoint.isolate"]
+    target: Literal["demo-host-1","demo-host-2"]
+    parameters: SimulationParameters
+    lifetime_seconds: int = Field(default=300,ge=1,le=900)
+
+
+class ApprovalUse(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    approval_id: UUID = Field(strict=False)
+
+
 def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None, reasoner: Reasoner | None = None) -> FastAPI:
     own_store = gateway is None
     store = gateway.store if gateway else Store(settings.database)
@@ -201,11 +243,13 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
             reasoner = Reasoner(ModelGateway(provider), store, max_calls=settings.max_model_calls,
                                 max_tokens=settings.max_model_tokens,max_cost_microusd=settings.max_model_cost_microusd)
         investigator = Investigator(gateway, store, max_tool_calls=settings.workflow_max_tool_calls,
-                                    duration_seconds=settings.workflow_duration_seconds, reasoner=reasoner)
+                                    duration_seconds=settings.workflow_duration_seconds, reasoner=reasoner,
+                                    require_review=settings.require_human_review)
     except Exception:
         if own_store:
             store.close()
         raise
+    reviews = ReviewService(store,gateway)
     slots = asyncio.Semaphore(4)
     own_verifier = settings.auth_mode == "oidc" and verifier is None
     if own_verifier:
@@ -260,10 +304,11 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
             if role is None:
                 store.audit(TENANT, "unmapped-subject", "authentication", "api", "denied")
                 raise Work4ceError("permission_denied", 403)
-            permissions = PERMISSIONS | {"connectors:admin"} if role == "admin" else PERMISSIONS
+            permissions = (REVIEWER_PERMISSIONS if role == "reviewer" else
+                           PERMISSIONS | ADMIN_PERMISSIONS if role == "admin" else PERMISSIONS)
             return ExecutionContext(TENANT, subject, permissions, CONNECTORS, True)
         if token and token.isascii() and hmac.compare_digest(token, settings.admin_token):
-            return ExecutionContext(TENANT, "demo-admin", PERMISSIONS | {"connectors:admin"}, CONNECTORS, True)
+            return ExecutionContext(TENANT, "demo-admin", PERMISSIONS | ADMIN_PERMISSIONS, CONNECTORS, True)
         if token and token.isascii() and hmac.compare_digest(token, settings.demo_token):
             return ExecutionContext(TENANT, "demo-analyst", PERMISSIONS, CONNECTORS, True)
         store.audit(TENANT, "unauthenticated", "authentication", "api", "denied")
@@ -347,14 +392,69 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
         response = {"id": state["id"], "status": state["state"], "checkpointed": state["checkpoint"] is not None,
                     "tool_calls": state["tool_calls"], "max_tool_calls": state["max_tool_calls"],
                     "deadline": state["deadline"]}
+        if state["review_required"]:
+            response["execution_status"] = state["state"]
+        if state["state"] == "completed":
+            report=store.get(ctx.tenant_id,identity)
+            if "review" in report:
+                response["execution_status"]=state["state"]
+                response["status"]=report["status"]
+                response["review"]=report["review"]
         if state["reasoning_config_hash"] is not None:
             response["model_usage"] = store.model_usage(ctx.tenant_id, ctx.subject, identity)
         return response
+
+    @app.post("/investigations/{identity}/review")
+    async def request_review(identity: UUID, ctx: Context):
+        return reviews.request_review(ctx,str(identity))
+
+    @app.get("/investigations/{identity}/review")
+    async def get_review(identity: UUID, ctx: Context):
+        return reviews.get_review(ctx,str(identity))
+
+    @app.post("/investigations/{identity}/review/decision")
+    async def review_decision(identity: UUID, body: ReviewDecision, ctx: Context):
+        return reviews.decide_review(ctx,str(identity),str(body.review_id),body.decision,body.comment)
+
+    @app.get("/reviews")
+    async def review_queue(ctx: Context):
+        return reviews.list_reviews(ctx)
+
+    @app.post("/responses",status_code=201)
+    async def propose_response(body: ResponseProposal,ctx: Context):
+        return reviews.propose(ctx,str(body.investigation_id),body.action,body.target,
+                               body.parameters.model_dump(),lifetime_seconds=body.lifetime_seconds)
+
+    @app.get("/responses")
+    async def responses(ctx: Context):
+        return reviews.list_responses(ctx)
+
+    @app.get("/responses/{identity}")
+    async def get_response(identity: UUID,ctx: Context):
+        return reviews.get_response(ctx,str(identity))
+
+    @app.post("/responses/{identity}/decision")
+    async def response_decision(identity: UUID,body: Decision,ctx: Context):
+        return reviews.decide_response(ctx,str(identity),body.decision,body.comment)
+
+    @app.post("/responses/{identity}/revoke")
+    async def revoke_response(identity: UUID,ctx: Context):
+        return reviews.revoke(ctx,str(identity))
+
+    @app.post("/responses/{identity}/simulate")
+    async def simulate_response(identity: UUID,body: ApprovalUse,ctx: Context):
+        return reviews.simulate(ctx,str(identity),str(body.approval_id))
 
     @app.get("/investigations/{identity}")
     async def report(identity: str, ctx: Context):
         if "investigations:read" not in ctx.permissions:
             raise Work4ceError("permission_denied", 403)
-        return store.get(ctx.tenant_id, identity)
+        result=store.get(ctx.tenant_id, identity)
+        review=result.get("review")
+        if (review is not None and review["requester"]!=ctx.subject
+                and "investigations:review" not in ctx.permissions):
+            # Tenant report-read access does not grant access to private review notes.
+            result={key:value for key,value in result.items() if key!="review"}
+        return result
 
     return app

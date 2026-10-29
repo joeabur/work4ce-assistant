@@ -2,7 +2,7 @@
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 186-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 225-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
@@ -12,10 +12,10 @@ The current product is a synthetic, read-only investigation foundation with dete
 | 4–5: stack and boundaries | FastAPI/Pydantic/JSON Schema, SQLAlchemy/Alembic, official MCP SDK, trusted backend policy | LangGraph, frontend, enterprise identity/deployment/observability, live model-runtime verification |
 | 6–8: integrations, registry and CDK | Typed connector/manifests, reviewed registration, compatible schemas, generic capability names, explicit tenant/connector grants, real reference adapters | Complete CDK packaging/signing, external plugin isolation, credential lifecycle, arbitrary production scopes/protocols |
 | 9: MCP | Official SDK local stdio client/server, reviewed tool discovery and poisoning checks | Remote OAuth, broader transport/protocol compatibility and production server administration |
-| 10: agent | Deterministic bounded collection/reporting workflow with durable read-boundary checkpoints | General AI planning, hypothesis evaluation, autonomous correlation, human review and full specialist/runtime design |
+| 10: agent | Deterministic bounded collection/reporting workflow with durable read-boundary checkpoints | General AI planning, hypothesis evaluation, autonomous correlation, multi-step review and full specialist/runtime design |
 | 11: model gateway | Typed provider contract, offline fixture, configured HTTPS adapter, strict plans/quotations, retries/circuit, durable usage and cache | Live-provider verification, broader routing/health, tokenizer-aware admission, enterprise redaction and independent AI evaluations |
 | 12–13: SOC/evidence | Literal-query synthetic telemetry, normalized source-attributed evidence, hashes and stored reports | Full OCSF model, triage, hunting, intelligence, detections, incident lifecycle and evidence governance |
-| 14–16: policy/security/privacy | Independent read-only authorization, synthetic tenant isolation, JWT verification option, manifest/result checks | Sensitive execution approvals, real multi-tenant identity, production TLS/RLS, privacy/retention/residency controls and formal security review |
+| 14–16: policy/security/privacy | Independent read-only authorization, synthetic tenant isolation, JWT verification option, manifest/result checks | Live sensitive-executor integration, real multi-tenant identity, production TLS/RLS, privacy/retention/residency controls and formal security review |
 | 17–18: reliability/storage | SQLAlchemy/PostgreSQL, migrations, audit, deadlines, invocation/model usage bounds | Distributed observability, operational alerts, performance/recovery evidence, secure production storage |
 | 19–22: user experience/demo/CLI | Local demo API/CLI, actual REST/MCP fixtures, guided setup | Dashboard, browser login/first-run wizard, broad labeled scenarios and complete CLI surface |
 | 23–24: repository/docs | Modular source/tests, exact specification, agent guidance, progress/threat/readiness records | Ongoing documentation verification as implementation expands |
@@ -34,7 +34,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 | Execution deadlines | Persisted default 120-second wall-clock deadline includes queue time. A resume cannot reset it. Each execution attempt is also bounded; clocks and synchronous storage still need operational hardening. |
 | Bounded retries | Tool-call reservations are persisted before each actual connector invocation, including fallback. An interrupted read without a checkpoint may be repeated within the remaining budget. This is not exactly-once execution. |
 | Partial results | The single read's collected checkpoint survives interruption/finalization failure. Multi-step partial-result merging and analyst-visible coverage aggregation are not implemented. |
-| Human review checkpoints | Unimplemented. Report assessment requests analyst review but there is no durable approval/review workflow. |
+| Human review checkpoints | Durable post-report acceptance gate, separate reviewer identity, expiry/refresh and rejection implemented. General multi-step/pre-tool human review remains incomplete. |
 | Execution tracing | Structured audit rows and checkpoint/source metadata exist. Distributed OpenTelemetry traces and operational dashboards are unimplemented. |
 | Idempotency | Header keys are scoped by tenant and subject, bound to query/limit/configured budgets. Replays reuse stable committed evidence/report identifiers. Changed arguments conflict. |
 
@@ -54,6 +54,8 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 186-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, human review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 225-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
+
+Migration `0004_reviews` implements durable human report acceptance and synthetic action approvals. Requester/reviewer separation, exact request/report binding, current source grants, expiry, revocation and single use pass on SQLite/PostgreSQL. Approval acceptance H is only exercised against a no-effect dry-run consumer, so a live privileged executor and production response validation remain incomplete.
