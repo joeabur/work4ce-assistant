@@ -211,3 +211,28 @@ class OIDCAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 json={'expected_revision':2,'status':'closed','comment':'Trusted manager disposition.'})
             self.assertEqual(closed.status_code,200,closed.text)
             self.assertEqual(closed.json()['closed_by'],'admin-sub')
+
+    async def test_combined_incident_requires_every_source_scope_under_oidc(self):
+        from dataclasses import replace
+        settings=replace(self.settings,oidc_subject_roles=self.settings.oidc_subject_roles+(('reviewer-sub','reviewer'),))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            analyst=self.headers('analyst-sub',roles=['admin'],permissions=['cases:manage'])
+            primary=(await client.post('/investigations',headers=analyst,json={'query':'PowerShell'})).json()
+            created=await client.post('/incidents',headers=analyst,
+                json={'investigation_id':primary['id'],'title':'Joint source scope','severity':'medium'})
+            self.assertEqual(created.status_code,201,created.text)
+            base='/incidents/'+created.json()['id']
+            other=self.store.begin(TENANT,'other-creator')
+            self.store.finish(TENANT,'other-creator',other,{'synthetic':True,'evidence':[]},'completed')
+            body={'expected_revision':1,'investigation_id':other,'comment':'Related synthetic source.'}
+            self.assertEqual((await client.post(base+'/investigations',headers=analyst,json=body)).status_code,404)
+            reviewer=self.headers('reviewer-sub',roles=['admin'])
+            self.assertEqual((await client.post(base+'/investigations',headers=reviewer,json=body)).status_code,403)
+            linked=await client.post(base+'/investigations',headers=self.headers('admin-sub'),json=body)
+            self.assertEqual(linked.status_code,200,linked.text)
+            self.assertEqual((await client.get(base,headers=analyst)).status_code,404)
+            self.assertEqual((await client.get('/incidents',headers=analyst)).json(),[])
+            sources=await client.get(base+'/investigations',headers=reviewer)
+            self.assertEqual(sources.status_code,200,sources.text)
+            self.assertEqual({source['investigation_id'] for source in sources.json()},{primary['id'],other})

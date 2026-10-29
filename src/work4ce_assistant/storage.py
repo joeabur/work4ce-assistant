@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 from .contracts import Work4ceError, canonical, digest
 from .pagination import decode_history_cursor, encode_history_cursor
 
-HEAD = "0006_incidents"
+HEAD = "0007_incident_sources"
 metadata = MetaData()
 investigations = Table("investigations", metadata,
     Column("id", Text, primary_key=True), Column("tenant", Text, nullable=False),
@@ -97,7 +97,12 @@ incident_activity = Table("incident_activity",metadata,
     Column("id",Text,primary_key=True),Column("tenant",Text,nullable=False),
     Column("incident_id",Text,ForeignKey("incidents.id"),nullable=False),Column("sequence",Integer,nullable=False),
     Column("kind",Text,nullable=False),Column("actor",Text,nullable=False),Column("body",Text,nullable=False),
-    Column("evidence_ids",Text,nullable=False),Column("from_status",Text),Column("to_status",Text),Column("created_at",Text,nullable=False))
+    Column("evidence_ids",Text,nullable=False),Column("from_status",Text),Column("to_status",Text),Column("created_at",Text,nullable=False),
+    Column("references",Text,nullable=False,server_default="[]"),Column("linked_investigation_id",Text))
+incident_investigations = Table("incident_investigations",metadata,
+    Column("tenant",Text,primary_key=True),Column("investigation_id",Text,ForeignKey("investigations.id"),primary_key=True),
+    Column("incident_id",Text,ForeignKey("incidents.id"),nullable=False),Column("report_hash",Text,nullable=False),
+    Column("linked_by",Text,nullable=False),Column("linked_at",Text,nullable=False))
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 

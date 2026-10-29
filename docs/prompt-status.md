@@ -2,7 +2,7 @@
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 326-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 357-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
@@ -54,7 +54,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 326-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 357-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
 
@@ -81,3 +81,9 @@ This is partial incident-management delivery. Full incident creation/linking, st
 Migration6 implements one human-created incident per collected investigation, work/resolution/manager-close/reopen states, and authored append-only activity with validated source evidence references. The workbench uses real scoped incident/list/activity APIs and expected revisions. Current case assignment controls access, while report/workflow/approval ownership remains unchanged. Tests verify races, read consistency, state/history integrity and the durable 200-entry bound.
 
 This adds the first incident lifecycle beyond assignment/escalation. Standalone incidents, multi-investigation grouping, SLA routing, notifications, title/severity editing, cursor-paginated incident queues and broader enterprise incident operations remain incomplete. Human incident disposition is separate from report review and response approval.
+
+## Section 12.6 / 19 — Multi-investigation incidents
+
+Migration7 adds explicit source membership to existing incidents, preserving their primary source, notes and revision history. Up to ten collected synthetic investigations can be bound by hash to one incident. Current case scope must cover every source; list filtering precedes the limit, and source reassignment can revoke access to the whole group. Linking, revision changes, activity and audit are atomic under sorted parent/case/incident locks. Notes use qualified investigation/evidence pairs, with primary-only legacy compatibility. The dashboard links sources and opens cross-source citations without changing report/response authority.
+
+Unlinking/merging, standalone incidents, paginated operational queues, classification editing, SLAs, notifications and large-scale operational validation remain incomplete. This feature is human-directed grouping, not an AI correlation accuracy claim.

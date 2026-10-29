@@ -320,13 +320,13 @@ class WorkbenchBrowserTests(unittest.TestCase):
         dialog=self.page.get_by_role('dialog',name='Add incident note',exact=True)
         markup='<img src=x onerror="window.__incident_xss=true"> Analyst observation of synthetic evidence.'
         dialog.get_by_label('Incident note',exact=True).fill(markup)
-        dialog.get_by_label('Evidence 1',exact=True).check()
+        dialog.get_by_role('checkbox',name=f'INV-{investigation_id[:8].upper()} · Evidence 1',exact=True).check()
         dialog.get_by_role('button',name='Add note',exact=True).click()
         expect(dialog).not_to_be_visible()
         expect(details.get_by_text(markup,exact=True)).to_be_visible()
         self.assertEqual(details.locator('img').count(),0)
         self.assertFalse(self.page.evaluate('Boolean(window.__incident_xss)'))
-        details.get_by_role('button',name='Evidence 1',exact=True).click()
+        details.get_by_role('button',name=f'INV-{investigation_id[:8].upper()} · Evidence 1',exact=True).click()
         evidence_id=original['report']['evidence'][0]['evidence_id']
         expect(self.page.get_by_test_id('evidence-'+evidence_id)).to_have_class(re.compile('highlight'))
         details.get_by_role('button',name='Start work',exact=True).click()
@@ -458,6 +458,69 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.login(self.reviewer)
         self.assertEqual(self.page.get_by_role('button',name='Load older investigations',exact=True).count(),1)
         expect(rows).to_have_count(50)
+        self.assertEqual(self.policy_errors,[])
+
+    def test_multi_investigation_incident_citations(self):
+        auth={'Authorization':'Bearer '+self.analyst}
+        reports=[]
+        for query in ('PowerShell','inventory'):
+            response=self.http.post('/investigations',headers=auth,json={'query':query})
+            self.assertEqual(response.status_code,201)
+            reports.append(response.json())
+        primary,secondary=reports
+        response=self.http.post('/incidents',headers=auth,json={
+            'investigation_id':primary['id'],'title':'Related synthetic endpoint activity',
+            'description':'Cross-investigation incident coordination.','severity':'medium'})
+        self.assertEqual(response.status_code,201)
+        identity=response.json()['id']
+        self.login(self.analyst)
+        self.navigate('Incidents')
+        self.page.get_by_test_id('incident-row-'+identity).click()
+        details=self.page.get_by_role('region',name='Incident details',exact=True)
+        details.get_by_role('button',name='Link investigation',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Link investigation',exact=True)
+        dialog.get_by_label('Related investigation',exact=True).select_option(secondary['id'])
+        reason='<img src=x onerror="window.__link_xss=true"> Related synthetic endpoint context.'
+        dialog.get_by_label('Link reason',exact=True).fill(reason)
+        with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/investigations')) as event:
+            dialog.get_by_role('button',name='Link investigation',exact=True).click()
+        self.assertEqual(event.value.status,200)
+        expect(dialog).not_to_be_visible()
+        source=self.page.get_by_test_id('linked-investigation-'+secondary['id'])
+        expect(source).to_be_visible()
+        expect(details.get_by_text(reason,exact=True)).to_be_visible()
+        self.assertEqual(details.locator('img').count(),0)
+        self.assertFalse(self.page.evaluate('Boolean(window.__link_xss)'))
+        details.get_by_role('button',name='Add incident note',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Add incident note',exact=True)
+        dialog.get_by_label('Incident note',exact=True).fill('Secondary report evidence remains source-attributed.')
+        citation=f'INV-{secondary["id"][:8].upper()} · Evidence 1'
+        dialog.get_by_role('checkbox',name=citation,exact=True).check()
+        with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/notes')) as event:
+            dialog.get_by_role('button',name='Add note',exact=True).click()
+        self.assertEqual(event.value.status,200)
+        expect(dialog).not_to_be_visible()
+        details.get_by_role('button',name=citation,exact=True).click()
+        evidence=secondary['report']['evidence'][0]['evidence_id']
+        expect(self.page.get_by_test_id('evidence-'+evidence)).to_have_class(re.compile('highlight'))
+        expect(self.page.get_by_role('region',name='Investigation report').get_by_role('heading',name='inventory',exact=True)).to_be_visible()
+        # Mutations while viewing the secondary source must refresh that source.
+        details.get_by_role('button',name='Start work',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='Start work',exact=True)
+        dialog.get_by_role('button',name='Confirm status',exact=True).click()
+        expect(dialog).not_to_be_visible()
+        expect(details.get_by_text('In progress',exact=True).first).to_be_visible()
+        entries=self.http.get('/incidents/'+identity+'/activity',headers=auth).json()
+        self.assertEqual(entries[2]['references'],[{'investigation_id':secondary['id'],'evidence_id':evidence}])
+        self.assertEqual(entries[2]['evidence_ids'],[])
+        self.assertEqual(entries[1]['linked_investigation_id'],secondary['id'])
+        for original in reports:
+            self.assertEqual(self.http.get('/investigations/'+original['id'],headers=auth).json(),original)
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-linked-investigations.png'),full_page=True)
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'))
+        self.page.screenshot(path=str(ROOT/'.local'/'workbench-linked-investigations-mobile.png'),full_page=True)
+        self.logout()
         self.assertEqual(self.policy_errors,[])
 
 

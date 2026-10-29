@@ -264,9 +264,21 @@ class IncidentStatus(IncidentRevision):
     comment: str = Field(default="",max_length=2000)
 
 
+class IncidentEvidenceReference(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    investigation_id: UUID = Field(strict=False)
+    evidence_id: str = Field(min_length=1,max_length=128)
+
+
 class IncidentNote(IncidentRevision):
     body: str = Field(min_length=1,max_length=2000)
     evidence_ids: list[Annotated[str,Field(min_length=1,max_length=128)]] = Field(default_factory=list,max_length=10)
+    references: list[IncidentEvidenceReference] = Field(default_factory=list,max_length=10)
+
+
+class IncidentLink(IncidentRevision):
+    investigation_id: UUID = Field(strict=False)
+    comment: str = Field(min_length=1,max_length=2000)
 
 
 def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None, reasoner: Reasoner | None = None) -> FastAPI:
@@ -436,13 +448,22 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     async def incident_activity(identity: UUID,ctx: Context):
         return incidents.activity(ctx,str(identity))
 
+    @app.get("/incidents/{identity}/investigations")
+    async def incident_sources(identity: UUID,ctx: Context):
+        return incidents.sources(ctx,str(identity))
+
+    @app.post("/incidents/{identity}/investigations")
+    async def incident_link(identity: UUID,body: IncidentLink,ctx: Context):
+        return incidents.link(ctx,str(identity),body.expected_revision,str(body.investigation_id),body.comment)
+
     @app.post("/incidents/{identity}/status")
     async def incident_status(identity: UUID,body: IncidentStatus,ctx: Context):
         return incidents.transition(ctx,str(identity),body.expected_revision,body.status,body.comment)
 
     @app.post("/incidents/{identity}/notes")
     async def incident_note(identity: UUID,body: IncidentNote,ctx: Context):
-        return incidents.add_note(ctx,str(identity),body.expected_revision,body.body,body.evidence_ids)
+        return incidents.add_note(ctx,str(identity),body.expected_revision,body.body,body.evidence_ids,
+            [reference.model_dump(mode="json") for reference in body.references])
 
     @app.get("/ready")
     async def ready(ctx: Context):

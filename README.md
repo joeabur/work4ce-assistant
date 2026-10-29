@@ -70,7 +70,7 @@ python scripts/build_dashboard.py
 python scripts/test_workbench_browser.py
 ```
 
-Browser checks require Chromium/Chrome, or `WORK4CE_BROWSER_EXECUTABLE` pointing to a compatible executable. Six real-browser checks passed, covering analyst/reviewer approval flow, session clearing, literal untrusted markup, mobile layout, paginated history with delayed-response refresh protection, assignment/escalation with stale-edit rejection, and the incident lifecycle with concurrent activity loading. The production static build and typecheck passed; npm's production-dependency audit reported zero known vulnerabilities at verification time. This does not establish comprehensive security or accessibility certification.
+Browser checks require Chromium/Chrome, or `WORK4CE_BROWSER_EXECUTABLE` pointing to a compatible executable. Seven real-browser checks passed, covering analyst/reviewer approval flow, session clearing, literal untrusted markup, mobile layout, paginated history with delayed-response refresh protection, assignment/escalation with stale-edit rejection, the incident lifecycle with concurrent activity loading, and multi-investigation linking with source-specific citations. The production static build and typecheck passed; npm's production-dependency audit reported zero known vulnerabilities at verification time. This does not establish comprehensive security or accessibility certification.
 
 ## API workflow
 
@@ -95,7 +95,9 @@ Data and control operations require bearer authentication. The static workbench 
 | `POST /investigations/{id}/case/assignment` | Assign or unassign with an expected revision |
 | `POST /investigations/{id}/case/escalation` | Request management attention with a reason |
 | `POST /investigations/{id}/case/acknowledge` | Manager acknowledgment of a pending escalation |
-| `POST /incidents` | Create one incident linked to a collected investigation |
+| `POST /incidents` | Create an incident with a primary collected investigation |
+| `GET /incidents/{id}/investigations` | Read linked source metadata and evidence choices |
+| `POST /incidents/{id}/investigations` | Link a related collected investigation with a revision and reason |
 | `GET /incidents` | List incidents in current case scope |
 | `GET /incidents/{id}/activity` | Read authored notes and status history |
 | `POST /incidents/{id}/notes` | Append a note with optional source evidence references |
@@ -109,7 +111,7 @@ Inspect evidence provenance, disable the selected connector as an admin, and rep
 
 ## Verification and scope
 
-The complete suite passed **326 tests in 102.555 seconds with zero skips** against real PostgreSQL 17.11 and SQLite. The suite exercises real REST/MCP replacement, persisted budgets and cancellation, migration/queue concurrency, and RSA-signed JWT verification against mocked HTTPS JWKS. Four end-to-end tests terminate a real worker after checkpoint commit, restart the API, and verify stable evidence without another REST search on both databases. No live identity provider was verified. The current wheel serves dashboard HTML and seven JavaScript assets with CSP; authenticated identity, scoped history, case coordination, incident lifecycle and migration 0006 passed from an isolated installed wheel. Human review/dry-run installed-wheel validation passed in an earlier increment. All 42 dependency pins and `pip check` passed.
+The complete suite passed **357 tests in 111.674 seconds with zero skips** against real PostgreSQL 17.11 and SQLite. The suite exercises real REST/MCP replacement, persisted budgets and cancellation, migration/queue concurrency, and RSA-signed JWT verification against mocked HTTPS JWKS. Four end-to-end tests terminate a real worker after checkpoint commit, restart the API, and verify stable evidence without another REST search on both databases. No live identity provider was verified. The current wheel serves dashboard HTML and seven JavaScript assets with CSP; authenticated identity, scoped history, case coordination, multi-investigation incidents and migration 0007 passed from an isolated installed wheel. Human review/dry-run installed-wheel validation passed in an earlier increment. All 42 dependency pins and `pip check` passed.
 
 Trusted workflow defaults are configured through `WORK4CE_MAX_TOOL_CALLS` (2; range 1–8) and `WORK4CE_INVESTIGATION_TIMEOUT_SECONDS` (120 seconds; range 0.01–600). Request bodies cannot override these limits.
 
@@ -122,6 +124,8 @@ Structured model assistance is selected by the trusted `WORK4CE_REASONING_MODE` 
 
 Human review and synthetic action approvals are now available through [the review workflow](docs/tutorials/reviews.md). `WORK4CE_REQUIRE_HUMAN_REVIEW=true` gates report acceptance after collection; the default remains false for compatibility. Action proposals always require an approved report review and a separate approval from another actor. Simulation consumes a matching unexpired approval exactly once and records `dry_run:true, performed:false`; no external response is executed. Server-mapped OIDC `reviewer` is supported without investigation or simulation execution grants.
 
-Case assignment and escalation are available through [case coordination](docs/tutorials/cases.md). Eligible assignees come from trusted server configuration. Creators/current assignees coordinate their cases; managers can coordinate any case and acknowledge escalations. Reviewers have read access. These edits preserve the original workflow requester, report contents and independent approval gates. PostgreSQL requires migration `0006_incidents` before starting the updated API; SQLite upgrades automatically.
+Case assignment and escalation are available through [case coordination](docs/tutorials/cases.md). Eligible assignees come from trusted server configuration. Creators/current assignees coordinate their cases; managers can coordinate any case and acknowledge escalations. Reviewers have read access. These edits preserve the original workflow requester, report contents and independent approval gates. PostgreSQL requires migration `0007_incident_sources` before starting the updated API; SQLite upgrades automatically.
 
-[Incident management](docs/tutorials/incidents.md) now supports human-entered title/severity, work status, resolution, manager closing/reopening, and append-only notes with evidence references. Each incident links one collected investigation and inherits current case visibility/assignment. Incident disposition is separate from report acceptance and response approvals. Activity is bounded to 200 entries; grouping multiple investigations, queue pagination, SLAs and notifications remain future work.
+[Incident management](docs/tutorials/incidents.md) now supports human-entered title/severity, work status, resolution, manager closing/reopening, and append-only notes with evidence references. Each incident keeps a primary investigation and supports up to nine related sources. Viewing or editing it requires current case access to every linked source. Incident disposition is separate from report acceptance and response approvals. Activity is bounded to 200 entries; unlinking/merging, queue pagination, SLAs and notifications remain future work.
+
+Linking adds a source-hash binding and an authored activity entry. A combined incident can have a narrower audience than its individual cases: reassignment of any source can revoke access to the entire incident. Notes use investigation-qualified evidence references; legacy `evidence_ids` still cite the primary source. All-source pending escalations block resolution/closing.

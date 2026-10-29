@@ -82,14 +82,28 @@ type Incident = {
   closed_by: string | null;
   closed_at: string | null;
 };
+type IncidentReference = { investigation_id: string; evidence_id: string };
+type IncidentSource = {
+  investigation_id: string;
+  primary: boolean;
+  escalation_state: "none" | "requested" | "acknowledged";
+  creator: string;
+  assignee: string | null;
+  query: string | null;
+  linked_by: string;
+  linked_at: string;
+  evidence: { evidence_id: string; summary: string }[];
+};
 type IncidentEntry = {
   id: string;
   incident_id: string;
   sequence: number;
-  kind: "created" | "note" | "status";
+  kind: "created" | "note" | "status" | "linked";
   actor: string;
   body: string;
   evidence_ids: string[];
+  references: IncidentReference[];
+  linked_investigation_id: string | null;
   from_status: IncidentStatus | null;
   to_status: IncidentStatus | null;
   created_at: string;
@@ -117,6 +131,7 @@ type Report = {
   case?: CaseCoord;
   incident?: Incident;
   incident_activity?: IncidentEntry[];
+  incident_sources?: IncidentSource[];
 };
 type Proposal = {
   id: string;
@@ -147,7 +162,8 @@ type Modal =
   | { kind: "new" }
   | { kind: "incident_create"; record: Report }
   | { kind: "incident_status"; incident: Incident; status: IncidentStatus }
-  | { kind: "incident_note"; incident: Incident; evidence: Evidence[] }
+  | { kind: "incident_note"; incident: Incident; sources: IncidentSource[] }
+  | { kind: "incident_link"; incident: Incident; sources: IncidentSource[] }
   | { kind: "case_assign"; coordination: CaseCoord }
   | { kind: "case_escalate"; coordination: CaseCoord }
   | { kind: "case_ack"; coordination: CaseCoord }
@@ -185,6 +201,12 @@ const labels: Record<string, string> = {
   needs_analyst_review: "Analyst review needed",
 };
 const messages: Record<string, string> = {
+  incident_source_conflict:
+    "That investigation is already linked to an incident. Refresh and review the current sources before trying again.",
+  incident_source_limit:
+    "This incident has reached its 10-investigation limit. Refresh to review the current sources.",
+  incident_not_active:
+    "Investigations can be linked only while an incident is open or in progress. Refresh to read its current status.",
   incident_revision_conflict:
     "This incident changed. Refresh and review its latest state before trying again.",
   incident_exists:
@@ -200,9 +222,9 @@ const messages: Record<string, string> = {
   incident_history_limit:
     "This incident has reached its 200-entry activity limit. Its saved history remains available.",
   incident_source_incomplete:
-    "Collect a synthetic investigation before creating its incident.",
+    "Collect the synthetic investigation before creating or linking an incident.",
   invalid_incident_evidence:
-    "Choose evidence from this incident’s source investigation.",
+    "Choose evidence from this incident’s linked investigations.",
   case_revision_conflict:
     "This case changed. Refresh and review its latest state before trying again.",
   case_assignee_ineligible:
@@ -492,6 +514,11 @@ export default function Page() {
     epoch = useRef(0),
     requests = useRef(new Set<AbortController>()),
     selectedID = useRef(""),
+    pendingCitation = useRef<{
+      investigationID: string;
+      evidenceID: string;
+      sequence: number;
+    } | null>(null),
     selection = useRef(0),
     historyVersion = useRef(0),
     historyBusy = useRef(false),
@@ -504,6 +531,7 @@ export default function Page() {
     requests.current.forEach((c) => c.abort());
     requests.current.clear();
     selectedID.current = "";
+    pendingCitation.current = null;
     selection.current++;
     historyVersion.current++;
     historyBusy.current = false;
@@ -531,6 +559,7 @@ export default function Page() {
     setView("investigations");
     setSearch("");
     setFilter("all");
+    setHighlight("");
   }, []);
   useEffect(() => () => requests.current.forEach((c) => c.abort()), []);
   const request = useCallback(
@@ -691,10 +720,14 @@ export default function Page() {
     }
   };
   const openCase = useCallback(
-    async (id: string) => {
+    async (id: string, evidenceID?: string) => {
       const generation = epoch.current,
         sequence = ++selection.current;
       selectedID.current = id;
+      pendingCitation.current = evidenceID
+        ? { investigationID: id, evidenceID, sequence }
+        : null;
+      setHighlight("");
       setSelected(null);
       setDetailLoading(true);
       try {
@@ -725,11 +758,23 @@ export default function Page() {
               if (!initial) return undefined;
               let incident = initial;
               for (let attempt = 0; attempt < 2; attempt++) {
-                const activity = await request<IncidentEntry[]>(
-                  `/incidents/${encodeURIComponent(incident.id)}/activity`,
+                const [activity, sources] = await Promise.all([
+                  request<IncidentEntry[]>(
+                    `/incidents/${encodeURIComponent(incident.id)}/activity`,
+                  ),
+                  request<IncidentSource[]>(
+                    `/incidents/${encodeURIComponent(incident.id)}/investigations`,
+                  ),
+                ]);
+                const sourceEntries = activity.filter(
+                  (entry) =>
+                    entry.kind === "created" || entry.kind === "linked",
                 );
-                if (activity.length === incident.revision)
-                  return { incident, activity };
+                if (
+                  activity.length === incident.revision &&
+                  sources.length === sourceEntries.length
+                )
+                  return { incident, activity, sources };
                 if (attempt === 0)
                   incident = await request<Incident>(
                     `/investigations/${encodeURIComponent(id)}/incident`,
@@ -741,6 +786,7 @@ export default function Page() {
         item.case = coordination;
         item.incident = incidentData?.incident;
         item.incident_activity = incidentData?.activity;
+        item.incident_sources = incidentData?.sources;
         if (generation === epoch.current && sequence === selection.current)
           setSelected(
             item.report
@@ -793,6 +839,27 @@ export default function Page() {
     },
     [request, fail],
   );
+  useEffect(() => {
+    const pending = pendingCitation.current;
+    if (
+      detailLoading ||
+      !pending ||
+      selected?.id !== pending.investigationID ||
+      selection.current !== pending.sequence
+    )
+      return;
+    pendingCitation.current = null;
+    if (
+      !selected.report?.evidence.some(
+        (item) => item.evidence_id === pending.evidenceID,
+      )
+    )
+      return;
+    setHighlight(pending.evidenceID);
+    document
+      .getElementById(`evidence-${pending.evidenceID}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [selected, detailLoading]);
   const connect = async (e: React.FormEvent) => {
     e.preventDefault();
     if (connecting || !tokenInput.trim()) return;
@@ -849,6 +916,9 @@ export default function Page() {
             "case_revision_conflict",
             "incident_revision_conflict",
             "incident_exists",
+            "incident_source_conflict",
+            "incident_source_limit",
+            "incident_not_active",
           ].includes(cause.code)
         ) {
           setModal(null);
@@ -928,11 +998,20 @@ export default function Page() {
             },
           ),
         "Incident status updated.",
-        current.incident.investigation_id,
+        selectedID.current,
       );
     if (current.kind === "incident_note") {
-      const evidenceIDs = data.getAll("evidence_ids").map(String);
-      if (evidenceIDs.length > 10) {
+      const availableReferences = current.sources.flatMap((source) =>
+        source.evidence.map((item) => ({
+          investigation_id: source.investigation_id,
+          evidence_id: item.evidence_id,
+        })),
+      );
+      const references = data
+        .getAll("references")
+        .map((value) => availableReferences[Number(value)])
+        .filter((value): value is IncidentReference => Boolean(value));
+      if (references.length > 10) {
         setError("Choose up to 10 evidence citations for each note.");
         return;
       }
@@ -945,12 +1024,38 @@ export default function Page() {
               body: JSON.stringify({
                 expected_revision: current.incident.revision,
                 body: String(data.get("body") || "").trim(),
-                evidence_ids: evidenceIDs,
+                references,
               }),
             },
           ),
         "Incident note added.",
-        current.incident.investigation_id,
+        selectedID.current,
+      );
+    }
+    if (current.kind === "incident_link") {
+      const chosen = String(data.get("related_investigation") || "").trim();
+      const entered = String(data.get("investigation_id") || "").trim();
+      if ((!chosen && !entered) || (chosen && entered && chosen !== entered)) {
+        setError(
+          "Choose one related investigation or enter its investigation ID.",
+        );
+        return;
+      }
+      return act(
+        () =>
+          request(
+            `/incidents/${encodeURIComponent(current.incident.id)}/investigations`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.incident.revision,
+                investigation_id: entered || chosen,
+                comment: String(data.get("link_reason") || "").trim(),
+              }),
+            },
+          ),
+        "Investigation linked. Incident access now requires access to every linked case.",
+        selectedID.current,
       );
     }
     if (current.kind === "case_assign")
@@ -1079,6 +1184,40 @@ export default function Page() {
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
+  const linkCandidates = (() => {
+    if (modal?.kind !== "incident_link") return [];
+    const linked = new Set(
+      modal.sources.map((source) => source.investigation_id),
+    );
+    const collected = new Set([
+      "completed",
+      "awaiting_review",
+      "review_rejected",
+    ]);
+    const candidates = new Map<string, string>();
+    cases
+      .filter((item) => collected.has(item.status) && !linked.has(item.id))
+      .forEach((item) =>
+        candidates.set(
+          item.id,
+          `${item.query || "Investigation"} · INV-${short(item.id)}`,
+        ),
+      );
+    coordinationRows
+      .filter(
+        (item) =>
+          !linked.has(item.investigation_id) &&
+          !candidates.has(item.investigation_id),
+      )
+      .forEach((item) => {
+        const known = cases.find(
+          (record) => record.id === item.investigation_id,
+        );
+        if (!known || collected.has(known.status))
+          candidates.set(item.investigation_id, `INV-${item.investigation_id}`);
+      });
+    return Array.from(candidates, ([id, label]) => ({ id, label }));
+  })();
   const pending = reviews.filter((r) => r.state === "pending");
   const hosts =
     selected?.report?.evidence
@@ -1129,6 +1268,10 @@ export default function Page() {
       .getElementById(`evidence-${id}`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
+  const incidentCitation = (investigationID: string, evidenceID: string) => {
+    if (selected?.id === investigationID) citation(evidenceID);
+    else void openCase(investigationID, evidenceID);
+  };
   function detail() {
     if (!selected) return null;
     const report = selected.report,
@@ -1138,6 +1281,10 @@ export default function Page() {
         review?.requester === me?.subject,
       coordination = selected.case,
       incident = selected.incident,
+      incidentSources = selected.incident_sources || [],
+      incidentEscalated = incidentSources.some(
+        (source) => source.escalation_state === "requested",
+      ),
       canCoordinate = Boolean(
         coordination &&
         (has("cases:manage") ||
@@ -1160,6 +1307,8 @@ export default function Page() {
             aria-label="Close report"
             onClick={() => {
               selectedID.current = "";
+              pendingCitation.current = null;
+              setHighlight("");
               selection.current++;
               setSelected(null);
             }}
@@ -1277,7 +1426,7 @@ export default function Page() {
                     </div>
                     <div>
                       <dt>Assignee</dt>
-                      <dd>{coordination?.assignee || "Unassigned"}</dd>
+                      <dd>{incident.assignee || "Unassigned"}</dd>
                     </div>
                     <div>
                       <dt>Created by</dt>
@@ -1332,10 +1481,7 @@ export default function Page() {
                       {["open", "in_progress"].includes(incident.status) && (
                         <button
                           className="button primary small"
-                          disabled={
-                            busy ||
-                            coordination?.escalation_state === "requested"
-                          }
+                          disabled={busy || incidentEscalated}
                           onClick={() =>
                             setModal({
                               kind: "incident_status",
@@ -1368,10 +1514,7 @@ export default function Page() {
                         has("cases:manage") && (
                           <button
                             className="button secondary small"
-                            disabled={
-                              busy ||
-                              coordination?.escalation_state === "requested"
-                            }
+                            disabled={busy || incidentEscalated}
                             onClick={() =>
                               setModal({
                                 kind: "incident_status",
@@ -1391,7 +1534,7 @@ export default function Page() {
                             setModal({
                               kind: "incident_note",
                               incident,
-                              evidence: report?.evidence || [],
+                              sources: incidentSources,
                             })
                           }
                         >
@@ -1400,12 +1543,83 @@ export default function Page() {
                       )}
                     </div>
                   )}
-                  {coordination?.escalation_state === "requested" && (
+                  {canCoordinate &&
+                    ["open", "in_progress"].includes(incident.status) &&
+                    incident.revision < 200 &&
+                    incidentSources.length < 10 && (
+                      <button
+                        className="button secondary small incident-link-button"
+                        disabled={busy}
+                        onClick={() =>
+                          setModal({
+                            kind: "incident_link",
+                            incident,
+                            sources: incidentSources,
+                          })
+                        }
+                      >
+                        Link investigation
+                      </button>
+                    )}
+                  {incidentEscalated && (
                     <p className="incident-pending">
-                      A manager must acknowledge the pending escalation before
-                      this incident can be resolved or closed.
+                      A manager must acknowledge every pending source escalation
+                      before this incident can be resolved or closed. Open a
+                      flagged investigation to review its case escalation.
                     </p>
                   )}
+                  <div className="section-title">
+                    <h3>Linked investigations</h3>
+                    <span>{incidentSources.length} loaded · up to 10</span>
+                  </div>
+                  <div
+                    className="incident-sources"
+                    aria-label="Linked investigations"
+                  >
+                    {incidentSources.map((source) => (
+                      <article
+                        className="incident-source"
+                        key={source.investigation_id}
+                        data-testid={`linked-investigation-${source.investigation_id}`}
+                      >
+                        <div className="incident-source-heading">
+                          <strong>{source.query || "Investigation"}</strong>
+                          {source.primary && (
+                            <span className="pill">Primary</span>
+                          )}
+                          {source.escalation_state === "requested" && (
+                            <Badge value="requested" />
+                          )}
+                        </div>
+                        <code className="incident-source-id">
+                          {source.investigation_id}
+                        </code>
+                        <p className="incident-meta">
+                          {source.assignee
+                            ? `Assigned to ${source.assignee}`
+                            : "Unassigned"}{" "}
+                          · Created by {source.creator}
+                        </p>
+                        <p className="incident-meta">
+                          Linked by {source.linked_by} ·{" "}
+                          {date(source.linked_at)}
+                        </p>
+                        <button
+                          className="button secondary small"
+                          aria-label={`View investigation ${short(source.investigation_id)}`}
+                          disabled={detailLoading}
+                          onClick={() => void openCase(source.investigation_id)}
+                        >
+                          View investigation
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                  <p className="incident-meta">
+                    Reading the combined incident requires access to every
+                    linked case. Linking can narrow who can view it; source
+                    report and response permissions remain independent.
+                  </p>
                   <div className="section-title">
                     <h3>Activity</h3>
                     <span>
@@ -1424,7 +1638,9 @@ export default function Page() {
                               ? "Incident created"
                               : entry.kind === "note"
                                 ? "Note added"
-                                : `${entry.from_status ? labels[entry.from_status] || entry.from_status : "Status"} → ${entry.to_status ? labels[entry.to_status] || entry.to_status : "Updated"}`}
+                                : entry.kind === "linked"
+                                  ? "Investigation linked"
+                                  : `${entry.from_status ? labels[entry.from_status] || entry.from_status : "Status"} → ${entry.to_status ? labels[entry.to_status] || entry.to_status : "Updated"}`}
                           </strong>
                           <time>{date(entry.created_at)}</time>
                         </div>
@@ -1432,24 +1648,65 @@ export default function Page() {
                         {entry.body && (
                           <p className="incident-prose">{entry.body}</p>
                         )}
-                        {!!entry.evidence_ids.length && (
+                        {entry.linked_investigation_id && (
                           <div className="citation-row">
-                            {entry.evidence_ids.map((id) => {
-                              const index =
-                                report?.evidence.findIndex(
-                                  (item) => item.evidence_id === id,
-                                ) ?? -1;
-                              return index < 0 ? (
-                                <span key={id}>Source unavailable</span>
-                              ) : (
-                                <button key={id} onClick={() => citation(id)}>
-                                  <Icon name="link" size={12} />
-                                  Evidence {index + 1}
-                                </button>
-                              );
-                            })}
+                            <button
+                              onClick={() =>
+                                void openCase(entry.linked_investigation_id!)
+                              }
+                            >
+                              View INV-{short(entry.linked_investigation_id)}
+                            </button>
                           </div>
                         )}
+                        {(() => {
+                          const references = entry.references?.length
+                            ? entry.references
+                            : entry.evidence_ids.map((evidence_id) => ({
+                                investigation_id: incident.investigation_id,
+                                evidence_id,
+                              }));
+                          return (
+                            !!references.length && (
+                              <div className="citation-row">
+                                {references.map((reference) => {
+                                  const source = incidentSources.find(
+                                    (item) =>
+                                      item.investigation_id ===
+                                      reference.investigation_id,
+                                  );
+                                  const index =
+                                    source?.evidence.findIndex(
+                                      (item) =>
+                                        item.evidence_id ===
+                                        reference.evidence_id,
+                                    ) ?? -1;
+                                  return index < 0 ? (
+                                    <span
+                                      key={`${reference.investigation_id}:${reference.evidence_id}`}
+                                    >
+                                      Source unavailable
+                                    </span>
+                                  ) : (
+                                    <button
+                                      key={`${reference.investigation_id}:${reference.evidence_id}`}
+                                      onClick={() =>
+                                        incidentCitation(
+                                          reference.investigation_id,
+                                          reference.evidence_id,
+                                        )
+                                      }
+                                    >
+                                      <Icon name="link" size={12} />
+                                      INV-{short(reference.investigation_id)} ·
+                                      Evidence {index + 1}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )
+                          );
+                        })()}
                       </li>
                     ))}
                   </ol>
@@ -2535,25 +2792,27 @@ export default function Page() {
               ? "Create incident"
               : modal.kind === "incident_status"
                 ? incidentStatusTitle(modal.status)
-                : modal.kind === "incident_note"
-                  ? "Add incident note"
-                  : modal.kind === "case_assign"
-                    ? "Assign case"
-                    : modal.kind === "case_escalate"
-                      ? "Escalate case"
-                      : modal.kind === "case_ack"
-                        ? "Acknowledge escalation"
-                        : modal.kind === "new"
-                          ? "Start an investigation"
-                          : modal.kind === "review"
-                            ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
-                            : modal.kind === "proposal"
-                              ? "Propose a synthetic dry run"
-                              : modal.kind === "decision"
-                                ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
-                                : modal.kind === "simulate"
-                                  ? "Record this simulation?"
-                                  : "Revoke this request?"
+                : modal.kind === "incident_link"
+                  ? "Link investigation"
+                  : modal.kind === "incident_note"
+                    ? "Add incident note"
+                    : modal.kind === "case_assign"
+                      ? "Assign case"
+                      : modal.kind === "case_escalate"
+                        ? "Escalate case"
+                        : modal.kind === "case_ack"
+                          ? "Acknowledge escalation"
+                          : modal.kind === "new"
+                            ? "Start an investigation"
+                            : modal.kind === "review"
+                              ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
+                              : modal.kind === "proposal"
+                                ? "Propose a synthetic dry run"
+                                : modal.kind === "decision"
+                                  ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
+                                  : modal.kind === "simulate"
+                                    ? "Record this simulation?"
+                                    : "Revoke this request?"
           }
           busy={busy}
           close={closeModal}
@@ -2622,11 +2881,58 @@ export default function Page() {
                   autoFocus
                 />
               </>
+            ) : modal.kind === "incident_link" ? (
+              <>
+                <p className="modal-copy">
+                  Link a collected investigation to {modal.incident.title}.
+                  Anyone reading the combined incident must have access to every
+                  linked case; linking can narrow its viewers.
+                </p>
+                <label htmlFor="related-investigation">
+                  Related investigation
+                </label>
+                <select
+                  id="related-investigation"
+                  name="related_investigation"
+                  defaultValue=""
+                  autoFocus
+                >
+                  <option value="">Choose a loaded investigation</option>
+                  {linkCandidates.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor="link-investigation-id">
+                  Investigation ID <span className="optional">optional</span>
+                </label>
+                <input
+                  id="link-investigation-id"
+                  aria-label="Investigation ID"
+                  name="investigation_id"
+                  maxLength={36}
+                  pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                  placeholder="Or enter another investigation’s UUID"
+                />
+                <p className="field-note">
+                  Choose a loaded investigation or enter one ID. The server
+                  checks access to every source independently.
+                </p>
+                <label htmlFor="link-reason">Link reason</label>
+                <textarea
+                  id="link-reason"
+                  name="link_reason"
+                  rows={4}
+                  maxLength={2000}
+                  required
+                />
+              </>
             ) : modal.kind === "incident_note" ? (
               <>
                 <p className="modal-copy">
                   Add a saved note to {modal.incident.title}. Choose up to 10
-                  source citations from this investigation.
+                  evidence citations across linked investigations.
                 </p>
                 <label htmlFor="incident-note">Incident note</label>
                 <textarea
@@ -2637,25 +2943,53 @@ export default function Page() {
                   required
                   autoFocus
                 />
-                {!!modal.evidence.length && (
+                {!!modal.sources.some((source) => source.evidence.length) && (
                   <fieldset className="incident-evidence-choices">
                     <legend>
                       Evidence citations{" "}
                       <span className="optional">optional · up to 10</span>
                     </legend>
-                    {modal.evidence.map((item, index) => (
-                      <label key={item.evidence_id}>
-                        <input
-                          type="checkbox"
-                          aria-label={`Evidence ${index + 1}`}
-                          name="evidence_ids"
-                          value={item.evidence_id}
-                        />
-                        <span>
-                          Evidence {index + 1}
-                          <small>{item.content.summary}</small>
-                        </span>
-                      </label>
+                    {modal.sources.map((source, sourceIndex) => (
+                      <div
+                        className="incident-source-choice"
+                        key={source.investigation_id}
+                      >
+                        <div className="incident-source-heading">
+                          <strong>{source.query || "Investigation"}</strong>
+                          {source.primary && (
+                            <span className="pill">Primary</span>
+                          )}
+                          {source.escalation_state === "requested" && (
+                            <Badge value="requested" />
+                          )}
+                        </div>
+                        <code className="incident-source-id">
+                          {source.investigation_id}
+                        </code>
+                        {source.evidence.map((item, index) => (
+                          <label key={item.evidence_id}>
+                            <input
+                              type="checkbox"
+                              aria-label={`INV-${short(source.investigation_id)} · Evidence ${index + 1}`}
+                              name="references"
+                              value={
+                                modal.sources
+                                  .slice(0, sourceIndex)
+                                  .reduce(
+                                    (count, item) =>
+                                      count + item.evidence.length,
+                                    0,
+                                  ) + index
+                              }
+                            />
+                            <span>
+                              INV-{short(source.investigation_id)} · Evidence{" "}
+                              {index + 1}
+                              <small>{item.summary}</small>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
                     ))}
                   </fieldset>
                 )}
@@ -2856,25 +3190,27 @@ export default function Page() {
                     ? "Create incident"
                     : modal.kind === "incident_status"
                       ? "Confirm status"
-                      : modal.kind === "incident_note"
-                        ? "Add note"
-                        : modal.kind === "case_assign"
-                          ? "Save assignment"
-                          : modal.kind === "case_escalate"
-                            ? "Request escalation"
-                            : modal.kind === "case_ack"
-                              ? "Acknowledge"
-                              : modal.kind === "new"
-                                ? "Investigate"
-                                : modal.kind === "proposal"
-                                  ? "Request approval"
-                                  : modal.kind === "simulate"
-                                    ? "Record dry run"
-                                    : modal.kind === "revoke"
-                                      ? "Revoke request"
-                                      : modal.decision === "approved"
-                                        ? "Approve"
-                                        : "Reject"}
+                      : modal.kind === "incident_link"
+                        ? "Link investigation"
+                        : modal.kind === "incident_note"
+                          ? "Add note"
+                          : modal.kind === "case_assign"
+                            ? "Save assignment"
+                            : modal.kind === "case_escalate"
+                              ? "Request escalation"
+                              : modal.kind === "case_ack"
+                                ? "Acknowledge"
+                                : modal.kind === "new"
+                                  ? "Investigate"
+                                  : modal.kind === "proposal"
+                                    ? "Request approval"
+                                    : modal.kind === "simulate"
+                                      ? "Record dry run"
+                                      : modal.kind === "revoke"
+                                        ? "Revoke request"
+                                        : modal.decision === "approved"
+                                          ? "Approve"
+                                          : "Reject"}
               </button>
             </div>
           </form>

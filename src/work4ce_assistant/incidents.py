@@ -37,6 +37,17 @@ class IncidentService:
         return self.repository.activity(context.tenant_id,context.subject,identity,
             all_cases=self.policy._all_cases(context))
 
+    def sources(self, context: ExecutionContext, identity: str) -> list[dict]:
+        self.policy._authorize(context)
+        return self.repository.sources(context.tenant_id,context.subject,identity,
+            all_cases=self.policy._all_cases(context))
+
+    def link(self, context: ExecutionContext, identity: str, revision: int,
+             investigation_id: str, comment: str) -> dict:
+        self.policy._authorize(context,'cases:coordinate')
+        return self.repository.link_investigation(context.tenant_id,context.subject,identity,revision,
+            investigation_id,comment,manage='cases:manage' in context.permissions)
+
     def transition(self, context: ExecutionContext, identity: str, revision: int,
                    status: str, comment: str='') -> dict:
         self.policy._authorize(context,'cases:coordinate')
@@ -44,7 +55,7 @@ class IncidentService:
             manage='cases:manage' in context.permissions)
 
     def add_note(self, context: ExecutionContext, identity: str, revision: int,
-                 body: str, evidence_ids: list[str]) -> dict:
+                 body: str, evidence_ids: list[str], references: list[dict] | None=None) -> dict:
         self.policy._authorize(context,'cases:coordinate')
         return self.repository.add_note(context.tenant_id,context.subject,identity,revision,body,evidence_ids,
-            manage='cases:manage' in context.permissions)
+            references=[] if references is None else references,manage='cases:manage' in context.permissions)
