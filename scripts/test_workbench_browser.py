@@ -49,9 +49,10 @@ class WorkbenchBrowserTests(unittest.TestCase):
             cls.reviewer=secrets.token_urlsafe(40)
             cls.api_port,rest_port=port(),port()
             cls.base=f'http://127.0.0.1:{cls.api_port}'
+            cls.database=str(directory/'browser.db')
             environment={**os.environ,'PYTHONPATH':str(ROOT/'src'),'WORK4CE_MODE':'demo','WORK4CE_AUTH_MODE':'demo',
                 'WORK4CE_DEMO_TOKEN':cls.analyst,'WORK4CE_ADMIN_TOKEN':cls.reviewer,
-                'WORK4CE_DB':str(directory/'browser.db'),'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}',
+                'WORK4CE_DB':cls.database,'WORK4CE_REST_URL':f'http://127.0.0.1:{rest_port}',
                 'WORK4CE_REQUIRE_HUMAN_REVIEW':'true','WORK4CE_REASONING_MODE':'fixture',
                 'WORK4CE_MAX_MODEL_CALLS':'4','WORK4CE_MAX_MODEL_TOKENS':'36000','WORK4CE_MAX_MODEL_COST_MICROUSD':'1000000',
                 'WORK4CE_MAX_TOOL_CALLS':'2','WORK4CE_INVESTIGATION_TIMEOUT_SECONDS':'120'}
@@ -223,6 +224,69 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'),'Mobile page overflows horizontally')
         self.page.screenshot(path=str(ROOT/'.local'/'workbench-mobile.png'),full_page=True)
         self.logout()
+        self.assertEqual(self.policy_errors,[])
+
+    def test_paginated_history_and_refresh_fence(self):
+        from sqlalchemy import update
+        from work4ce_assistant.api import TENANT
+        from work4ce_assistant.storage import Store,investigations
+        store=Store(self.database)
+        try:
+            identities=[]
+            for index in range(55):
+                identity=store.begin(TENANT,'demo-analyst')
+                store.finish(TENANT,'demo-analyst',identity,{'synthetic':True,'query':f'Archived synthetic case {index}',
+                    'assessment':'needs_analyst_review','evidence':[],'findings':[]},'completed')
+                identities.append(identity)
+            # Tied old timestamps exercise the ID tie-breaker across page boundaries.
+            with store.engine.begin() as connection:
+                connection.execute(update(investigations).where(investigations.c.id.in_(identities)).values(
+                    created_at='2025-01-01T00:00:00+00:00'))
+        finally: store.close()
+        self.login(self.analyst)
+        rows=self.page.locator('[data-testid^="case-row-"]')
+        expect(rows).to_have_count(50)
+        older=self.page.get_by_role('button',name='Load older investigations',exact=True)
+        expect(older).to_be_visible()
+        held=[]
+        def intercept(route):
+            if 'cursor=' in route.request.url:
+                held.append((route,route.fetch()))
+            else: route.continue_()
+        self.page.route('**/investigations/history?*',intercept)
+        older.click()
+        expect(self.page.get_by_role('button',name='Loading older investigations…',exact=True)).to_be_visible()
+        # A refresh must win over an older page response from before that refresh.
+        self.page.get_by_role('button',name='Refresh',exact=True).click()
+        expect(older).to_be_enabled()
+        self.assertEqual(len(held),1)
+        held[0][0].fulfill(response=held[0][1])
+        self.page.unroute('**/investigations/history?*',intercept)
+        # Wait for the stale response handler itself before asserting it was ignored.
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        expect(rows).to_have_count(50)
+        with self.page.expect_response(lambda response:'cursor=' in response.url and '/investigations/history?' in response.url) as event:
+            older.click()
+        self.assertEqual(event.value.status,200)
+        page=event.value.json()
+        self.assertIsNone(page['next_cursor'])
+        expect(rows).to_have_count(50+len(page['items']))
+        row_ids=rows.evaluate_all('(items) => items.map(item => item.dataset.testid)')
+        self.assertEqual(len(row_ids),len(set(row_ids)))
+        for identity in identities:
+            self.assertIn('case-row-'+identity,row_ids)
+        expect(older).not_to_be_visible()
+        oldest=sorted(identities)[0]
+        self.page.get_by_test_id('case-row-'+oldest).click()
+        expect(self.page.get_by_role('region',name='Investigation report')).to_be_visible()
+        self.page.get_by_label('Search loaded investigations',exact=True).fill('Archived synthetic case ')
+        expect(rows).to_have_count(55)
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'))
+        self.logout()
+        self.login(self.reviewer)
+        self.assertEqual(self.page.get_by_role('button',name='Load older investigations',exact=True).count(),1)
+        expect(rows).to_have_count(50)
         self.assertEqual(self.policy_errors,[])
 
 

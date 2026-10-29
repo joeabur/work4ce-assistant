@@ -26,6 +26,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 
 from .contracts import Work4ceError, canonical, digest
+from .pagination import decode_history_cursor, encode_history_cursor
 
 HEAD = "0004_reviews"
 metadata = MetaData()
@@ -258,13 +259,15 @@ class Store:
                 output["status"] = {"pending":"awaiting_review", "approved":"completed", "rejected":"review_rejected"}[data["state"]]
             return output
 
-    def list_investigations(self, tenant: str, *, subject: str | None = None,
-                            limit: int = 50) -> list[dict[str, Any]]:
-        """Bounded analyst summaries; private reports and review details stay out."""
+    @staticmethod
+    def _validate_history_query(subject: str | None, limit: int) -> None:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise Work4ceError("invalid_queue_limit",422)
         if subject is not None and (not isinstance(subject,str) or not 1 <= len(subject) <= 256):
             raise Work4ceError("invalid_subject_filter",422)
+
+    @staticmethod
+    def _history_statement(tenant: str, subject: str | None):
         joined = investigations.outerjoin(workflow_state, and_(
             workflow_state.c.id == investigations.c.id, workflow_state.c.tenant == investigations.c.tenant,
             workflow_state.c.subject == investigations.c.subject)).outerjoin(report_reviews, and_(
@@ -277,9 +280,10 @@ class Store:
         statement = statement.select_from(joined).where(investigations.c.tenant == tenant)
         if subject is not None:
             statement = statement.where(investigations.c.subject == subject)
-        statement = statement.order_by(investigations.c.created_at.desc(),investigations.c.id.desc()).limit(limit)
-        with self._connection() as connection:
-            rows = connection.execute(statement).all()
+        return statement.order_by(investigations.c.created_at.desc(),investigations.c.id.desc())
+
+    @staticmethod
+    def _history_summaries(rows) -> list[dict[str, Any]]:
         summaries = []
         for row in rows:
             try:
@@ -307,6 +311,33 @@ class Store:
                 "updated_at":row.updated_at,"query":query,"assessment":assessment,
                 "evidence_count":len(evidence) if isinstance(evidence,list) else 0,"review_state":row.review_state})
         return summaries
+
+    def list_investigations(self, tenant: str, *, subject: str | None = None,
+                            limit: int = 50) -> list[dict[str, Any]]:
+        """Legacy array contract with the same safe projection as history pages."""
+        self._validate_history_query(subject,limit)
+        with self._connection() as connection:
+            rows = connection.execute(self._history_statement(tenant,subject).limit(limit)).all()
+        return self._history_summaries(rows)
+
+    def page_investigations(self, tenant: str, *, subject: str | None = None,
+                            limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+        """Descending keyset page; the unsigned marker never replaces SQL scope."""
+        self._validate_history_query(subject,limit)
+        statement = self._history_statement(tenant,subject)
+        if cursor is not None:
+            created_at,identity = decode_history_cursor(cursor,tenant,subject)
+            statement = statement.where(or_(investigations.c.created_at < created_at,
+                and_(investigations.c.created_at == created_at,investigations.c.id < identity)))
+        with self._connection() as connection:
+            rows = connection.execute(statement.limit(limit + 1)).all()
+        selected = rows[:limit]
+        items = self._history_summaries(selected)
+        next_cursor = None
+        if len(rows) > limit:
+            anchor = selected[-1]
+            next_cursor = encode_history_cursor(tenant,subject,anchor.created_at,anchor.id)
+        return {"items":items,"next_cursor":next_cursor}
 
     def enabled(self, tenant: str, connector_id: str) -> bool:
         with self._connection() as connection:

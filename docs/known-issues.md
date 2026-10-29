@@ -17,6 +17,8 @@
 
 Record exact final verification counts and unrun checks in `release-readiness.md`.
 
-- The workbench supports investigations, evidence, reviews, synthetic approvals and connector status. Case lists load at most 50 entries (API maximum 100); search and counts apply to that view. Cursor pagination, assignment/escalation, full incident management, general SOC analytics, connector administration and first-run onboarding are pending. OIDC redirect login is absent; use an already-issued API token, held only in memory. Signing out does not revoke the server token.
+- The workbench supports investigations, evidence, reviews, synthetic approvals and connector status. Case history loads 50 entries per page (API maximum 100), with explicit loading of older pages. Search and counts apply to loaded history; refresh resets to the latest page. Assignment/escalation, full incident management, general SOC analytics, connector administration and first-run onboarding are pending. OIDC redirect login is absent; use an already-issued API token, held only in memory. Signing out does not revoke the server token.
 - Building the dashboard requires Node/npm and the npm registry/cache. Backend-only installs can omit generated assets, in which case `/workbench/` returns 503. Build before producing a distributable wheel. Chromium/Chrome is needed for the separate browser runner. Desktop/mobile rendering and workflow were checked, but formal accessibility and cross-browser validation are unrun.
 - npm's production-dependency audit returned zero known vulnerabilities at verification time. Python advisory scans and broader supply-chain/security assessments remain incomplete.
+
+- History cursors preserve position, not a database snapshot. Newer investigations appear after refresh; statuses can change between pages. Review and response queues still use their existing bounded lists. Large-history query performance and load testing remain unverified.

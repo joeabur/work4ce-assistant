@@ -1,4 +1,6 @@
 """Workbench metadata/list authorization and no-cache/static security controls."""
+import base64
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,7 +10,7 @@ import httpx
 from fastapi import FastAPI
 
 from work4ce_assistant.api import create_app,Settings,TENANT,PERMISSIONS,CONNECTORS,REVIEWER_PERMISSIONS
-from work4ce_assistant.contracts import CapabilityManifest,ConnectorManifest,ExecutionContext
+from work4ce_assistant.contracts import CapabilityManifest,ConnectorManifest,ExecutionContext,digest
 from work4ce_assistant.fixtures import SEARCH_CAPABILITY,search_events
 from work4ce_assistant.gateway import Gateway
 from work4ce_assistant.investigation import Investigator
@@ -78,6 +80,65 @@ class WorkbenchAPITests(unittest.IsolatedAsyncioTestCase):
         self.app.dependency_overrides[dependency]=lambda:ExecutionContext(TENANT,'demo-analyst',frozenset(),CONNECTORS,True)
         self.assertEqual((await self.client.get('/investigations',headers=self.auth)).status_code,403)
         self.app.dependency_overrides.clear()
+
+    async def test_history_page_route_preserves_legacy_array_and_summary_privacy(self):
+        self.assertEqual((await self.client.get('/investigations/history')).status_code,401)
+        legacy=await self.client.get('/investigations',headers=self.auth)
+        page=await self.client.get('/investigations/history?subject=different-owner&tenant=foreign',headers=self.auth)
+        self.assertEqual(page.status_code,200,page.text)
+        self.assertIsInstance(legacy.json(),list)
+        self.assertEqual(page.json(),{'items':legacy.json(),'next_cursor':None})
+        self.assertFalse({'review','review_id','reviewer','comment','approval_id','report','evidence'} & page.json()['items'][0].keys())
+        self.assertEqual(page.headers['cache-control'],'no-store')
+        # The literal history route must be registered before /{identity}.
+        self.assertEqual(set(page.json()),{'items','next_cursor'})
+
+    async def test_admin_history_uses_cursor_and_owner_cannot_reuse_it(self):
+        first=await self.client.get('/investigations/history?limit=1',headers=self.admin)
+        self.assertEqual(first.status_code,200,first.text)
+        self.assertEqual(len(first.json()['items']),1)
+        cursor=first.json()['next_cursor']
+        self.assertIsInstance(cursor,str)
+        second=await self.client.get('/investigations/history',params={'limit':1,'cursor':cursor},headers=self.admin)
+        self.assertIsNone(second.json()['next_cursor'])
+        self.assertEqual({row['id'] for row in first.json()['items']+second.json()['items']},{self.own['id'],self.other['id']})
+        denied=await self.client.get('/investigations/history',params={'cursor':cursor},headers=self.auth)
+        self.assertEqual(denied.status_code,422)
+        self.assertEqual(denied.json(),{'error':'invalid_history_cursor'})
+        # Publicly forgeable scope hashes are not permissions: SQL still limits an
+        # analyst to their own records even with a fabricated future position.
+        payload={'v':1,'scope':digest({'tenant':TENANT,'subject':'demo-analyst'}),
+            'created_at':'9999-01-01T00:00:00+00:00','id':'ffffffff-ffff-ffff-ffff-ffffffffffff'}
+        forged=base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+        response=await self.client.get('/investigations/history',params={'cursor':forged,'subject':'different-owner'},headers=self.auth)
+        self.assertEqual([row['id'] for row in response.json()['items']],[self.own['id']])
+
+    async def test_history_rechecks_current_permissions_tenant_and_role_scope(self):
+        for index in range(2):
+            identity=self.store.begin(TENANT,'demo-analyst')
+            self.store.finish(TENANT,'demo-analyst',identity,{'query':'extra-'+str(index),'synthetic':True},'completed')
+        page=(await self.client.get('/investigations/history?limit=1',headers=self.auth)).json()
+        cursor=page['next_cursor']
+        route=next(route for route in self.app.routes if route.path=='/investigations/history' and 'GET' in route.methods)
+        dependency=route.dependant.dependencies[0].call
+        self.app.dependency_overrides[dependency]=lambda:ExecutionContext(TENANT,'demo-analyst',frozenset(),CONNECTORS,True)
+        response=await self.client.get('/investigations/history',params={'cursor':cursor},headers=self.auth)
+        self.assertEqual(response.status_code,403)
+        self.app.dependency_overrides[dependency]=lambda:ExecutionContext('foreign','demo-analyst',PERMISSIONS,CONNECTORS,True)
+        response=await self.client.get('/investigations/history',params={'cursor':cursor},headers=self.auth)
+        self.assertEqual(response.status_code,422)
+        self.assertEqual((await self.client.get('/investigations/history',headers=self.auth)).json(),{'items':[],'next_cursor':None})
+        self.app.dependency_overrides[dependency]=lambda:ExecutionContext(TENANT,'demo-analyst',REVIEWER_PERMISSIONS,CONNECTORS,True)
+        self.assertEqual((await self.client.get('/investigations/history',params={'cursor':cursor},headers=self.auth)).status_code,422)
+        self.app.dependency_overrides.clear()
+
+    async def test_history_rejects_invalid_limits_and_cursors(self):
+        for limit in ('0','101','bad'):
+            self.assertEqual((await self.client.get('/investigations/history',params={'limit':limit},headers=self.auth)).status_code,422)
+        for cursor in ('','x'*513,'bad+encoding','not-a-cursor'):
+            response=await self.client.get('/investigations/history',params={'cursor':cursor},headers=self.auth)
+            self.assertEqual(response.status_code,422,response.text)
+            self.assertEqual(response.json(),{'error':'invalid_history_cursor'})
 
     async def test_sensitive_success_and_error_responses_not_cached(self):
         for path,headers in (('/me',{}),('/me',self.auth),('/investigations',self.auth),

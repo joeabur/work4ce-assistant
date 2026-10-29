@@ -2,7 +2,7 @@
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 243-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 257-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
@@ -54,7 +54,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 243-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 257-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
 
@@ -64,4 +64,8 @@ Migration `0004_reviews` implements durable human report acceptance and syntheti
 
 Next.js, React and TypeScript implement investigations, evidence timelines/citations, independent report review, separate synthetic response approvals and connector status. API identity drives visible controls, while backend policy authorizes every operation. Analysts list their own cases; reviewers list cases in their tenant. GET `/me` and bounded GET `/investigations` expose summaries without private notes or approval nonces. The static export is packaged with FastAPI under `/workbench/`.
 
-Three Chromium checks passed: analyst → reviewer → action approval → original-analyst dry run; memory-only sessions and literal untrusted markup; mobile usability without horizontal overflow. The production build, typecheck and installed-wheel static assets passed. This is a partial Phase 10 delivery. Overview analytics, alerts/incidents, AI chat, hunting, detection/intelligence, registry/MCP administration, audit/admin views, connector registration/enablement, first-run wizard and OIDC redirect login remain incomplete. Existing resume/cancel/review controls are available in the case view; no automatic worker or live action is added.
+Four Chromium checks passed: analyst → reviewer → action approval → original-analyst dry run; memory-only sessions and literal untrusted markup; mobile usability without horizontal overflow; older-case pagination and delayed-page refresh fencing. The production build, typecheck and installed-wheel static assets passed. This is a partial Phase 10 delivery. Overview analytics, alerts/incidents, AI chat, hunting, detection/intelligence, registry/MCP administration, audit/admin views, connector registration/enablement, first-run wizard and OIDC redirect login remain incomplete. Existing resume/cancel/review controls are available in the case view; no automatic worker or live action is added.
+
+## Investigation history increment
+
+Section 19 / Phase 10 now includes paginated investigation history through a backwards-compatible cursor endpoint and explicit loading of older cases in the workbench. Every page rechecks current tenant/owner/reviewer grants. Search, status filters and counts cover loaded history. A refresh begins again at the newest page; old responses are fenced from the refreshed or signed-out view. This does not add global analytics, assignment/escalation, server-side search or pagination of the review/response queues.

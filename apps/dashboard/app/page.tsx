@@ -26,6 +26,7 @@ type Case = {
   evidence_count: number;
   review_state: string | null;
 };
+type CasePage = { items: Case[]; next_cursor: string | null };
 type Review = {
   investigation_id: string;
   review_id: string;
@@ -128,6 +129,8 @@ const messages: Record<string, string> = {
   response_connector_unavailable: "The report’s data source is disabled.",
   workflow_busy: "This investigation is already running.",
   workflow_deadline_exceeded: "The investigation deadline expired.",
+  invalid_history_cursor:
+    "This history position is no longer valid. Refresh to load the latest investigations.",
   model_budget_exhausted: "This investigation reached its model budget.",
 };
 class RequestError extends Error {
@@ -351,6 +354,9 @@ export default function Page() {
     [connecting, setConnecting] = useState(false),
     [view, setView] = useState<View>("investigations");
   const [cases, setCases] = useState<Case[]>([]),
+    [nextCursor, setNextCursor] = useState<string | null>(null),
+    [historyLoading, setHistoryLoading] = useState(false),
+    [historyLoaded, setHistoryLoaded] = useState(false),
     [reviews, setReviews] = useState<Review[]>([]),
     [responses, setResponses] = useState<Proposal[]>([]),
     [sources, setSources] = useState<Source[]>([]),
@@ -370,6 +376,8 @@ export default function Page() {
     requests = useRef(new Set<AbortController>()),
     selectedID = useRef(""),
     selection = useRef(0),
+    historyVersion = useRef(0),
+    historyBusy = useRef(false),
     createIntent = useRef<{ signature: string; key: string } | null>(null);
   const has = (p: string) => Boolean(me?.permissions.includes(p));
   const logout = useCallback(() => {
@@ -380,10 +388,15 @@ export default function Page() {
     requests.current.clear();
     selectedID.current = "";
     selection.current++;
+    historyVersion.current++;
+    historyBusy.current = false;
     setMe(null);
     setTokenInput("");
     setConnecting(false);
     setCases([]);
+    setNextCursor(null);
+    setHistoryLoading(false);
+    setHistoryLoaded(false);
     setReviews([]);
     setResponses([]);
     setSources([]);
@@ -464,11 +477,14 @@ export default function Page() {
   );
   const refresh = useCallback(
     async (identity: Me) => {
-      const generation = epoch.current;
+      const generation = epoch.current,
+        version = ++historyVersion.current;
+      historyBusy.current = false;
+      setHistoryLoading(false);
       setLoading(true);
       try {
         const [items, proposals, connectors, queue, ready] = await Promise.all([
-          request<Case[]>("/investigations?limit=50"),
+          request<CasePage>("/investigations/history?limit=50"),
           identity.permissions.includes("responses:read")
             ? request<Proposal[]>("/responses")
             : Promise.resolve([]),
@@ -482,20 +498,57 @@ export default function Page() {
             throw cause;
           }),
         ]);
-        if (generation !== epoch.current) return;
-        setCases(items);
+        if (generation !== epoch.current || version !== historyVersion.current)
+          return;
+        setCases(items.items);
+        setNextCursor(items.next_cursor);
+        setHistoryLoaded(true);
         setResponses(proposals);
         setSources(connectors);
         setReviews(queue);
         setHealthy(ready.connectors);
       } catch (cause) {
-        if (generation === epoch.current) fail(cause);
+        if (generation === epoch.current && version === historyVersion.current)
+          fail(cause);
       } finally {
-        if (generation === epoch.current) setLoading(false);
+        if (generation === epoch.current && version === historyVersion.current)
+          setLoading(false);
       }
     },
     [request, fail],
   );
+  const loadOlder = async () => {
+    if (!me || !nextCursor || loading || historyBusy.current) return;
+    const generation = epoch.current,
+      version = historyVersion.current,
+      cursor = nextCursor;
+    historyBusy.current = true;
+    setHistoryLoading(true);
+    setError("");
+    try {
+      const page = await request<CasePage>(
+        `/investigations/history?limit=50&cursor=${encodeURIComponent(cursor)}`,
+      );
+      if (generation !== epoch.current || version !== historyVersion.current)
+        return;
+      setCases((current) => {
+        const known = new Set(current.map((item) => item.id));
+        return [
+          ...current,
+          ...page.items.filter((item) => !known.has(item.id)),
+        ];
+      });
+      setNextCursor(page.next_cursor);
+    } catch (cause) {
+      if (generation === epoch.current && version === historyVersion.current)
+        fail(cause);
+    } finally {
+      if (generation === epoch.current && version === historyVersion.current) {
+        historyBusy.current = false;
+        setHistoryLoading(false);
+      }
+    }
+  };
   const openCase = useCallback(
     async (id: string) => {
       const generation = epoch.current,
@@ -1295,7 +1348,7 @@ export default function Page() {
                   <div className="panel-heading">
                     <div>
                       <h2>Case queue</h2>
-                      <p>Latest investigations in your scope</p>
+                      <p>Investigation history in your scope</p>
                     </div>
                     <span className="pill">{filtered.length} visible</span>
                   </div>
@@ -1303,8 +1356,8 @@ export default function Page() {
                     <div className="search-input">
                       <Icon name="search" size={17} />
                       <input
-                        aria-label="Search investigations"
-                        placeholder="Search cases or queries…"
+                        aria-label="Search loaded investigations"
+                        placeholder="Search loaded cases…"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                       />
@@ -1379,6 +1432,27 @@ export default function Page() {
                       }
                     />
                   )}
+                  <div className="history-footer" aria-live="polite">
+                    <p>
+                      {cases.length} loaded · Search and counts cover loaded
+                      history.
+                      {historyLoaded &&
+                        !loading &&
+                        !nextCursor &&
+                        " All available investigations loaded."}
+                    </p>
+                    {nextCursor && (
+                      <button
+                        className="button secondary"
+                        disabled={loading || historyLoading || busy}
+                        onClick={() => void loadOlder()}
+                      >
+                        {historyLoading
+                          ? "Loading older investigations…"
+                          : "Load older investigations"}
+                      </button>
+                    )}
+                  </div>
                 </section>
                 {detailLoading ? (
                   <section className="panel">

@@ -21,7 +21,7 @@ Backend-only setup supports `WORK4CE_BUILD_DASHBOARD=0`. If assets were never bu
 
 1. Enter the configured analyst access token. It remains in memory and clears on reload or sign-out. In OIDC mode, use an already-issued API access token; redirect login is not implemented.
 2. Select **New investigation**, enter `PowerShell`, and submit. The idempotency key survives a retry of the same open submission. The report displays synthetic designation, findings, evidence timeline and limitations. Select an evidence citation to highlight its source item.
-3. Search/filter the loaded case view. Analysts list their own investigations; authorized reviewers can list their tenant. Counts describe loaded cases, not fleet-wide analytics. Owner controls support manual resume/cancel where applicable and report review requests/refresh.
+3. Use **Load older investigations** to extend the initial 50-case view, then search/filter loaded cases. Refresh starts again at the newest page. Analysts list their own investigations; authorized reviewers can list their tenant. Counts describe loaded cases, not fleet-wide analytics. Owner controls support manual resume/cancel where applicable and report review requests/refresh.
 4. Sign out and connect with the different reviewer/admin token. Open **Review queue**, inspect the report and approve or reject with a comment. The backend rejects self-review and stale/expired bindings.
 
 Collection and human acceptance are different states. Required review displays `awaiting_review` until decided. Refresh expired pending review as the owner. See [review policy](reviews.md) for expiry, permissions and immutable report bindings.
@@ -45,10 +45,18 @@ Every result records `dry_run:true, performed:false`. No endpoint changes and no
 
 The browser runner requires Chromium/Chrome on PATH or `WORK4CE_BROWSER_EXECUTABLE` pointing to a compatible executable. It creates its own temporary database, random credentials and local API/fixture processes, then cleans up those resources. Playwright is pinned in the Python development lock. No live credentials or external browser service are needed.
 
-Three browser checks cover the full analyst/reviewer/approval/simulation flow, memory-only sessions/reload clearing, literal hostile-markup display and a 390px mobile layout. Screenshots are written under ignored `.local/`. Backend tests separately verify owner/tenant scoping, filtered summaries, integrity checks, cache headers and CSP/static behavior. Test evidence is recorded in [release readiness](../release-readiness.md).
+Four browser checks cover the full analyst/reviewer/approval/simulation flow, memory-only sessions/reload clearing, literal hostile-markup display, a 390px mobile layout, and older-case pagination with delayed-response refresh protection. Screenshots are written under ignored `.local/`. Backend tests separately verify owner/tenant scoping, filtered summaries, integrity checks, cache headers and CSP/static behavior. Test evidence is recorded in [release readiness](../release-readiness.md).
 
 ## Limits and security
 
-Case lists load the latest 50 entries; the API accepts at most 100. Search and metrics apply to that view. Pagination, assignment/escalation, full incident management, broader SOC modules, first-run onboarding, OIDC redirect login and complete cross-browser/accessibility validation remain future work.
+Case history loads 50 entries per request; the API accepts at most 100. Load older cases explicitly; search, status filters and metrics apply to loaded history. Cursor ordering is stable by creation time and ID. A refresh starts from the newest page; paging does not freeze live statuses or provide a database snapshot. Review and response queues retain their existing bounded lists. Assignment/escalation, full incident management, broader SOC modules, first-run onboarding, OIDC redirect login and complete cross-browser/accessibility validation remain future work.
 
 Tokens are never stored in cookies, localStorage, sessionStorage or URLs. Sign-out clears client state and aborts/fences pending requests, but does not revoke the server token. Telemetry/comments render as text. The server sends no-store and a CSP restricted to local assets and trusted compiled-script hashes. Use TLS and appropriate token lifecycle controls before any deployed use; this synthetic workflow is not production validation.
+
+## History API
+
+GET `/investigations/history?limit=50` returns `{"items":[...],"next_cursor":"..."}`. Pass the returned cursor in the next request's `cursor` query parameter. A null cursor marks the end. The original GET `/investigations` continues returning its existing bounded array.
+
+Every page requires current bearer authentication and `investigations:read`. Analysts see only their own rows; trusted reviewers can read their tenant. Cursors bind the read scope and contain only a version, scope digest and position. They are unsigned position markers, never authorization grants. They remain valid across server restarts and do not require retaining a server secret. Malformed, unsupported or mismatched cursors return 422. Changing a marker cannot change the server's tenant/owner filters.
+
+The query uses descending creation time and ID with a strict before predicate, so newer inserts do not shift older pages or repeat rows. Equal timestamps use the ID tie-breaker. Statuses and permissions are evaluated when each request runs; this is not a historical snapshot. Query-performance/load measurements for large histories remain unrun.

@@ -336,6 +336,15 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
         return store.list_investigations(ctx.tenant_id,
             subject=None if "investigations:review" in ctx.permissions else ctx.subject,limit=limit)
 
+    @app.get("/investigations/history")
+    async def investigation_history(ctx: Context,limit: int=Query(default=50,ge=1,le=100),
+                                    cursor: str | None = None):
+        if "investigations:read" not in ctx.permissions:
+            raise Work4ceError("permission_denied",403)
+        return store.page_investigations(ctx.tenant_id,
+            subject=None if "investigations:review" in ctx.permissions else ctx.subject,
+            limit=limit,cursor=cursor)
+
     @app.get("/health")
     async def health():
         return {"status": "ok", "mode": "demo", "synthetic": True}

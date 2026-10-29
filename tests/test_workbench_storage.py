@@ -1,12 +1,13 @@
 """Analyst list projections preserve ownership, integrity, and private metadata."""
 import json
+import base64
 import os
 import unittest
 
 from sqlalchemy import update
 
 import test_storage
-from work4ce_assistant.contracts import Work4ceError
+from work4ce_assistant.contracts import Work4ceError, digest
 from work4ce_assistant.storage import investigations, report_reviews
 
 TENANT, OWNER = 'workbench-tenant', 'analyst-one'
@@ -114,6 +115,112 @@ class WorkbenchContract:
             connection.execute(update(report_reviews).where(report_reviews.c.investigation_id == identity).values(tenant=TENANT,requester='another-owner'))
         with self.assertRaisesRegex(Work4ceError,'review_report_mismatch'):
             self.store.list_investigations(TENANT)
+
+
+    @staticmethod
+    def cursor(payload):
+        return base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode().rstrip('=')
+
+    def test_keyset_pages_cover_equal_timestamp_ties_without_duplicates(self):
+        identities = [self.report(query='tie-'+str(index)) for index in range(8)]
+        with self.store.engine.begin() as connection:
+            connection.execute(update(investigations).where(investigations.c.tenant == TENANT).values(created_at='2026-01-01T00:00:00+00:00'))
+        cursor = None
+        loaded = []
+        page_sizes = []
+        while True:
+            page = self.store.page_investigations(TENANT,subject=OWNER,limit=3,cursor=cursor)
+            loaded.extend(row['id'] for row in page['items'])
+            page_sizes.append(len(page['items']))
+            cursor = page['next_cursor']
+            if cursor is None:
+                break
+            self.assertLess(len(page_sizes),5)
+        self.assertEqual(loaded,sorted(identities,reverse=True))
+        self.assertEqual(len(set(loaded)),8)
+        self.assertEqual(page_sizes,[3,3,2])
+
+    def test_newer_insert_does_not_shift_or_repeat_loaded_history(self):
+        identities = [self.report() for _ in range(5)]
+        with self.store.engine.begin() as connection:
+            connection.execute(update(investigations).where(investigations.c.tenant == TENANT).values(created_at='2026-01-01T00:00:00+00:00'))
+        first = self.store.page_investigations(TENANT,subject=OWNER,limit=2)
+        newer = self.report(query='newer-than-anchor')
+        with self.store.engine.begin() as connection:
+            connection.execute(update(investigations).where(investigations.c.id == newer).values(created_at='2026-02-01T00:00:00+00:00'))
+        loaded = [row['id'] for row in first['items']]
+        cursor = first['next_cursor']
+        while cursor:
+            page = self.store.page_investigations(TENANT,subject=OWNER,limit=2,cursor=cursor)
+            loaded.extend(row['id'] for row in page['items'])
+            cursor = page['next_cursor']
+        self.assertEqual(loaded,sorted(identities,reverse=True))
+        self.assertNotIn(newer,loaded)
+        self.assertEqual(self.store.page_investigations(TENANT,subject=OWNER,limit=1)['items'][0]['id'],newer)
+
+    def test_empty_exact_and_final_pages(self):
+        self.assertEqual(self.store.page_investigations(TENANT),{'items':[],'next_cursor':None})
+        for _ in range(4):
+            self.report()
+        exact = self.store.page_investigations(TENANT,subject=OWNER,limit=4)
+        self.assertEqual(len(exact['items']),4)
+        self.assertIsNone(exact['next_cursor'])
+        first = self.store.page_investigations(TENANT,subject=OWNER,limit=2)
+        self.assertIsInstance(first['next_cursor'],str)
+        final = self.store.page_investigations(TENANT,subject=OWNER,limit=2,cursor=first['next_cursor'])
+        self.assertEqual(len(final['items']),2)
+        self.assertIsNone(final['next_cursor'])
+        anchor = final['items'][-1]
+        cursor = self.cursor({'v':1,'scope':digest({'tenant':TENANT,'subject':OWNER}),'created_at':anchor['created_at'],'id':anchor['id']})
+        self.assertEqual(self.store.page_investigations(TENANT,subject=OWNER,cursor=cursor),{'items':[],'next_cursor':None})
+
+    def test_strict_cursor_validation_and_scope_binding(self):
+        own = self.report()
+        self.report()
+        valid = self.store.page_investigations(TENANT,subject=OWNER,limit=1)['next_cursor']
+        payload = json.loads(base64.urlsafe_b64decode(valid + '='*(-len(valid)%4)))
+        malformed = ['',True,[], 'x'*513,'bad+encoding','bad/encoding', valid+'=', 'a',
+            self.cursor([]),self.cursor({**payload,'v':2}),self.cursor({**payload,'v':True}),
+            self.cursor({**payload,'extra':'field'}),self.cursor({**payload,'id':'not-a-uuid'}),
+            self.cursor({**payload,'id':None}),self.cursor({**payload,'created_at':'2026-99-01T00:00:00+00:00'}),
+            self.cursor({**payload,'created_at':'2026-01-01T00:00:00'}),self.cursor({**payload,'scope':None})]
+        duplicate_json = '{"v":1,"v":1,"scope":'+json.dumps(payload['scope'])+',"created_at":'+json.dumps(payload['created_at'])+',"id":'+json.dumps(payload['id'])+'}'
+        malformed.append(base64.urlsafe_b64encode(duplicate_json.encode()).decode().rstrip('='))
+        for cursor in malformed:
+            with self.subTest(cursor=cursor),self.assertRaisesRegex(Work4ceError,'invalid_history_cursor') as caught:
+                self.store.page_investigations(TENANT,subject=OWNER,cursor=cursor)
+            self.assertEqual(caught.exception.status,422)
+        for tenant,subject in [('other-tenant',OWNER),(TENANT,'other-owner'),(TENANT,None)]:
+            with self.assertRaisesRegex(Work4ceError,'invalid_history_cursor'):
+                self.store.page_investigations(tenant,subject=subject,cursor=valid)
+        # This is an unsigned position marker. A caller can fabricate a correctly
+        # scoped marker, but cannot change the server's authoritative SQL scope.
+        self.report(subject='other-owner')
+        self.report(tenant='other-tenant')
+        forged = self.cursor({**payload,'created_at':'9999-01-01T00:00:00+00:00','id':'ffffffff-ffff-ffff-ffff-ffffffffffff'})
+        items = self.store.page_investigations(TENANT,subject=OWNER,cursor=forged)['items']
+        self.assertEqual(len(items),2)
+        self.assertTrue(all(item['subject']==OWNER for item in items))
+
+    def test_history_projection_retains_review_privacy_and_integrity_checks(self):
+        identity = self.report()
+        review = self.store.request_review(TENANT,OWNER,identity)
+        self.store.decide_review(TENANT,'private-reviewer',identity,review['review_id'],'approved','private comment')
+        self.report()
+        first = self.store.page_investigations(TENANT,subject=OWNER,limit=1)
+        second = self.store.page_investigations(TENANT,subject=OWNER,limit=1,cursor=first['next_cursor'])
+        items = first['items']+second['items']
+        self.assertTrue(all(set(row)==SUMMARY_FIELDS for row in items))
+        approved = next(row for row in items if row['id']==identity)
+        self.assertEqual(approved['review_state'],'approved')
+        raw = json.dumps([first,second])
+        for private in ('private raw telemetry','private report metadata','private comment','private-reviewer',review['review_id']):
+            self.assertNotIn(private,raw)
+        self.assertEqual(self.store.list_investigations(TENANT,subject=OWNER),items)
+        with self.store.engine.begin() as connection:
+            connection.execute(update(investigations).where(investigations.c.id == identity).values(report='{}'))
+        with self.assertRaisesRegex(Work4ceError,'report_integrity_failure'):
+            self.store.page_investigations(TENANT,subject=OWNER)
 
 
 class SQLiteWorkbenchTests(WorkbenchContract,unittest.TestCase):
