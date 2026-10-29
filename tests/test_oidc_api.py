@@ -212,6 +212,27 @@ class OIDCAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(closed.status_code,200,closed.text)
             self.assertEqual(closed.json()['closed_by'],'admin-sub')
 
+    async def test_connector_review_enable_requires_trusted_admin_mapping(self):
+        from dataclasses import replace
+        settings=replace(self.settings,oidc_subject_roles=self.settings.oidc_subject_roles+(('reviewer-sub','reviewer'),))
+        app=create_app(settings,self.gateway,verifier=self.verifier)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://api') as client:
+            for subject in ('analyst-sub','reviewer-sub'):
+                headers=self.headers(subject,roles=['admin'],permissions=['connectors:admin'])
+                self.assertEqual((await client.get('/connectors/administration',headers=headers)).status_code,403)
+                self.assertEqual((await client.post('/connectors/demo-rest/administration/disable',headers=headers,
+                    json={'expected_revision':0,'reason':'Forged grant'})).status_code,403)
+            headers=self.headers('admin-sub')
+            state=(await client.get('/connectors/administration',headers=headers)).json()[0]
+            self.assertEqual((await client.post('/connectors/demo-rest/administration/disable',headers=headers,
+                json={'expected_revision':state['revision'],'reason':'Trusted administrator'})).status_code,200)
+            body={'expected_revision':1,'manifest_hash':state['manifest_hash'],'reason':'Reviewed the registered read capability'}
+            self.assertEqual((await client.post('/connectors/demo-rest/administration/review-enable',
+                headers=self.headers('reviewer-sub',roles=['admin']),json=body)).status_code,403)
+            enabled=await client.post('/connectors/demo-rest/administration/review-enable',headers=headers,json=body)
+            self.assertEqual(enabled.status_code,200,enabled.text)
+            self.assertEqual(enabled.json()['last_review']['actor'],'admin-sub')
+
     async def test_onboarding_uses_trusted_admin_mapping_and_signed_role_grants(self):
         from dataclasses import replace
         settings=replace(self.settings,oidc_subject_roles=(('analyst-sub','analyst'),('reviewer-sub','reviewer')))

@@ -405,6 +405,119 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.logout()
         self.assertEqual(self.policy_errors,[])
 
+    def test_connector_administration_review_and_revocation(self):
+        admin={'Authorization':'Bearer '+self.reviewer}
+        analyst={'Authorization':'Bearer '+self.analyst}
+        reason='<img src=x onerror="window.__connector_xss=true"> Review this synthetic source.'
+
+        def state(identity):
+            response=self.http.get('/connectors/administration',headers=admin)
+            self.assertEqual(response.status_code,200,response.text)
+            return next(item for item in response.json() if item['connector_id']==identity)
+
+        def change(identity,enable,comment):
+            card=self.page.get_by_test_id('source-card-'+identity)
+            title='Review and enable source' if enable else 'Disable source'
+            action='Review and enable' if enable else 'Disable source'
+            card.get_by_role('button',name=action,exact=True).click()
+            dialog=self.page.get_by_role('dialog',name=title,exact=True)
+            dialog.get_by_label('Change reason',exact=True).fill(comment)
+            if enable:
+                confirmation=dialog.get_by_role('checkbox',name='I reviewed this registered capability and approve re-enabling it',exact=True)
+                self.assertTrue(confirmation.evaluate('(input) => input.required'))
+                confirmation.check()
+            suffix='/administration/'+('review-enable' if enable else 'disable')
+            with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith(suffix)) as event:
+                dialog.get_by_role('button',name=action,exact=True).click()
+            self.assertEqual(event.value.status,200,event.value.text())
+            data=event.value.json()
+            expect(dialog).not_to_be_visible()
+            expect(card.get_by_role('button',name='Disable source' if enable else 'Review and enable',exact=True)).to_be_visible()
+            self.assertEqual(data['enabled'],enable)
+            return data
+
+        try:
+            self.login(self.analyst)
+            self.navigate('Integrations')
+            expect(self.page.get_by_test_id('source-card-demo-rest')).to_be_visible()
+            self.assertEqual(self.page.get_by_role('button',name='Disable source',exact=True).count(),0)
+            self.assertEqual(self.page.get_by_role('button',name='Review and enable',exact=True).count(),0)
+            self.assertEqual(self.http.get('/connectors/administration',headers=analyst).status_code,403)
+            self.assertEqual(self.http.post('/connectors/demo-rest/administration/disable',headers=analyst,
+                json={'expected_revision':0,'reason':'A client cannot grant administration.'}).status_code,403)
+            self.logout()
+            self.login(self.reviewer)
+            self.navigate('Integrations')
+            before=state('demo-rest')
+            disabled=change('demo-rest',False,reason)
+            self.assertEqual(disabled['revision'],before['revision']+1)
+            card=self.page.get_by_test_id('source-card-demo-rest')
+            expect(card.get_by_text(reason,exact=True)).to_be_visible()
+            self.assertEqual(card.locator('img').count(),0)
+            self.assertFalse(self.page.evaluate('Boolean(window.__connector_xss)'))
+            # A legacy disable supersedes a review already open in another client.
+            card.get_by_role('button',name='Review and enable',exact=True).click()
+            dialog=self.page.get_by_role('dialog',name='Review and enable source',exact=True)
+            dialog.get_by_label('Change reason',exact=True).fill('This review must lose to the later disablement.')
+            dialog.get_by_role('checkbox',name='I reviewed this registered capability and approve re-enabling it',exact=True).check()
+            concurrent=self.http.post('/connectors/demo-rest/disable',headers=admin)
+            self.assertEqual(concurrent.status_code,200,concurrent.text)
+            with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/administration/review-enable')) as event:
+                dialog.get_by_role('button',name='Review and enable',exact=True).click()
+            self.assertEqual(event.value.status,409,event.value.text())
+            expect(dialog).not_to_be_visible()
+            expect(self.page.get_by_text('This source changed. Refresh and review its latest state before trying again.',exact=True)).to_be_visible()
+            self.assertFalse(state('demo-rest')['enabled'])
+            reviewed=change('demo-rest',True,reason)
+            self.assertEqual(reviewed['last_review']['manifest_hash'],reviewed['manifest_hash'])
+            self.assertEqual(reviewed['last_review']['actor'],'demo-admin')
+            self.assertEqual(reviewed['last_review']['reason'],reason)
+            expect(card.get_by_text(reason,exact=True).first).to_be_visible()
+            self.assertEqual(card.locator('img').count(),0)
+            # An admin can recover from a completely unavailable source set.
+            change('demo-rest',False,'Check complete source disablement.')
+            change('demo-mcp',False,'Check complete source disablement.')
+            self.assertEqual(self.http.get('/ready',headers=admin).status_code,503)
+            self.assertFalse(self.http.get('/onboarding/status',headers=admin).json()['ready_for_investigation'])
+            for identity in ('demo-rest','demo-mcp'):
+                expect(self.page.get_by_test_id('source-card-'+identity).get_by_role('button',name='Review and enable',exact=True)).to_be_visible()
+            change('demo-rest',True,'Reviewed the trusted read-only definition and restored the REST fixture.')
+            self.assertTrue(self.http.get('/onboarding/status',headers=admin).json()['ready_for_investigation'])
+            self.page.screenshot(path=str(ROOT/'.local'/'workbench-connector-controls.png'),full_page=True)
+            self.page.set_viewport_size({'width':390,'height':844})
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'))
+            self.page.screenshot(path=str(ROOT/'.local'/'workbench-connector-controls-mobile.png'),full_page=True)
+            self.page.set_viewport_size({'width':1440,'height':1000})
+            self.page.get_by_role('button',name='New investigation',exact=True).first.click()
+            dialog=self.page.get_by_role('dialog',name='Start an investigation',exact=True)
+            dialog.get_by_label('Investigation query',exact=True).fill('PowerShell')
+            with self.page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/investigations')) as event:
+                dialog.get_by_role('button',name='Investigate',exact=True).click()
+            self.assertEqual(event.value.status,201,event.value.text())
+            self.assertTrue(event.value.json()['report']['evidence'])
+            expect(self.page.get_by_role('region',name='Investigation report')).to_be_visible()
+            self.logout()
+            self.login(self.analyst)
+            self.navigate('Integrations')
+            expect(self.page.get_by_test_id('source-card-demo-rest')).to_be_visible()
+            self.assertEqual(self.page.get_by_role('button',name='Disable source',exact=True).count(),0)
+            self.assertEqual(self.page.get_by_role('button',name='Review and enable',exact=True).count(),0)
+            expect(self.page.get_by_text(reason,exact=True)).not_to_be_visible()
+            self.assertEqual(self.page.evaluate('localStorage.length'),0)
+            self.assertEqual(self.page.evaluate('sessionStorage.length'),0)
+            self.assertEqual(self.context.cookies(),[])
+            self.assertEqual(self.policy_errors,[])
+        finally:
+            # The runner database is disposable, but other browser checks share it.
+            # Restore current disabled sources using a fresh reviewed hash/revision.
+            for identity in ('demo-rest','demo-mcp'):
+                current=state(identity)
+                if not current['enabled']:
+                    restored=self.http.post('/connectors/'+identity+'/administration/review-enable',headers=admin,
+                        json={'expected_revision':current['revision'],'manifest_hash':current['manifest_hash'],
+                              'reason':'Restore the isolated browser fixture for subsequent checks.'})
+                    self.assertEqual(restored.status_code,200,restored.text)
+
     def test_mobile_layout_remains_usable(self):
         self.page.set_viewport_size({'width':390,'height':844})
         self.login(self.analyst)

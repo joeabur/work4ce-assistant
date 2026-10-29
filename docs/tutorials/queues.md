@@ -11,7 +11,7 @@
 
 Both return `{"items":[...],"next_cursor":"..."}`. Pass the returned marker as the next request's `cursor` parameter. A null cursor marks the end of the currently visible results. Limits are 1–100. Item fields match the existing scoped queue DTOs; report bodies, private review notes and approval material are excluded. The original `/cases` and `/incidents` routes retain their bounded arrays ordered by latest update.
 
-Assignment, escalation, notes and status changes do not move records between pages. Case coordination includes only explicitly stored coordination records and follows the parent investigation's creation time, even if coordination was added later. No schema or dependency change is required; migration head remains `0007_incident_sources`.
+Assignment, escalation, notes and status changes do not move records between pages. Case coordination includes only explicitly stored coordination records and follows the parent investigation's creation time, even if coordination was added later. Pagination itself adds no schema or dependency requirement; the current application migration head is `0008_connector_controls`.
 
 ## Current access and live changes
 

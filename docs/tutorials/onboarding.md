@@ -12,7 +12,7 @@ Starting the walkthrough requires current investigation/event-read grants, a rea
 
 | Observation | Meaning and limit |
 |---|---|
-| Database ready | A connection succeeded and the observed Alembic revision matches `0007_incident_sources`; not a backup/restore, load or deployment check |
+| Database ready | A connection succeeded and the observed Alembic revision matches `0008_connector_controls`; not a backup/restore, load or deployment check |
 | Administrator configured | Demo token configuration passed startup validation, or the trusted OIDC role mapping contains an admin; not a live admin sign-in/provisioning check |
 | Connector healthy | A currently permitted enabled connector returned true from its health method; no event search is performed |
 | Reasoning mode | Trusted configuration says deterministic, offline fixture or external provider; no inference, provider connectivity or billing check occurs |

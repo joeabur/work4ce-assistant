@@ -128,6 +128,33 @@ class ReviewPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.service.simulate(owner(),approved['id'],approved['approval_id'])
         self.assertEqual(self.store.get_response(TENANT,approved['id'])['state'],'approved')
 
+    async def test_changed_review_hash_between_policy_and_consumption_cannot_consume_approval(self):
+        approved=self.approved()
+        report=self.store.get(TENANT,self.identity)['report']
+        binding=self.tools._entries['demo-rest'].manifest_hash
+        replacement='f'*64
+        self.assertNotEqual(binding,replacement)
+        original_consume=self.store.consume_response
+        def replacement_review_before_transaction(*args):
+            state=self.store.connector_administration(TENANT,'demo-rest')
+            disabled=self.store.change_connector_state(TENANT,'other-admin','demo-rest',state['revision'],False,
+                'A later administrator paused the source.')
+            self.store.change_connector_state(TENANT,'other-admin','demo-rest',disabled['revision'],True,
+                'A replacement definition was reviewed.',manifest_hash=replacement)
+            return original_consume(*args)
+        with patch.object(self.store,'consume_response',side_effect=replacement_review_before_transaction) as consume:
+            with self.assertRaisesRegex(Work4ceError,'response_connector_unavailable') as caught:
+                self.service.simulate(owner(),approved['id'],approved['approval_id'])
+        self.assertEqual(caught.exception.status,403)
+        consume.assert_called_once()
+        current=self.store.get_response(TENANT,approved['id'])
+        self.assertEqual(current['state'],'approved')
+        self.assertIsNone(current['simulation_result'])
+        self.assertFalse(self.tools._active(self.tools._entries['demo-rest'],owner()))
+        self.assertFalse(any(action=='response.simulate' for action,_,_ in self.store.audit_rows(TENANT)))
+        self.assertEqual(self.store.get(TENANT,self.identity)['report'],report)
+        self.assertEqual(self.events.calls,1)
+
     async def test_approval_cannot_cross_requester_tenant_or_action(self):
         approved=self.approved()
         for context in (owner(subject='other'),owner(tenant_id='other')):

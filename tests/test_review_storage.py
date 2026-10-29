@@ -250,6 +250,79 @@ class ReviewContract:
         self.assertEqual(self.store.get_response(TENANT,approved['id'])['state'],'approved')
         self.assertIsNone(self.store.get_response(TENANT,approved['id'])['simulation_result'])
 
+    def test_current_review_hash_is_checked_at_final_consumption_and_matching_review_restores_access(self):
+        binding='a'*64
+        report={'synthetic':True,'evidence':[{'connector_id':'demo-rest','manifest_hash':binding}]}
+        identity=self.store.begin(TENANT,OWNER)
+        self.store.finish(TENANT,OWNER,identity,report,'completed')
+        review=self.store.request_review(TENANT,OWNER,identity)
+        self.store.decide_review(TENANT,REVIEWER,identity,review['review_id'],'approved')
+        self.store.initialize_connector(TENANT,'demo-rest')
+        approved=self.approved_response(identity)
+        self.store.disable(TENANT,'admin','demo-rest')
+        state=self.store.connector_administration(TENANT,'demo-rest')
+        self.store.change_connector_state(TENANT,'admin','demo-rest',state['revision'],True,
+            'A replacement definition was reviewed.',manifest_hash='b'*64)
+        before=self.store.audit_rows(TENANT)
+        with self.assertRaisesRegex(Work4ceError,'response_connector_unavailable') as caught:
+            self.store.consume_response(TENANT,OWNER,approved['id'],approved['approval_id'])
+        self.assertEqual(caught.exception.status,403)
+        current=self.store.get_response(TENANT,approved['id'])
+        self.assertEqual(current['state'],'approved')
+        self.assertIsNone(current['simulation_result'])
+        self.assertEqual(self.store.audit_rows(TENANT),before)
+        self.store.disable(TENANT,'admin','demo-rest')
+        state=self.store.connector_administration(TENANT,'demo-rest')
+        self.store.change_connector_state(TENANT,'admin','demo-rest',state['revision'],True,
+            'The source definition bound to the evidence was reviewed.',manifest_hash=binding)
+        consumed=self.store.consume_response(TENANT,OWNER,approved['id'],approved['approval_id'])
+        self.assertEqual(consumed['state'],'consumed')
+        self.assertIs(consumed['simulation_result']['performed'],False)
+        with self.assertRaisesRegex(Work4ceError,'approval_reused'):
+            self.store.consume_response(TENANT,OWNER,approved['id'],approved['approval_id'])
+        self.assertEqual(self.store.get(TENANT,identity)['report'],report)
+        self.assertEqual(sum(action=='response.simulate' for action,_,_ in self.store.audit_rows(TENANT)),1)
+
+    def test_legacy_missing_source_hash_requires_bootstrap_review_and_empty_hash_is_always_denied(self):
+        for index,legacy_hash in enumerate(({}, {'manifest_hash':None})):
+            source='legacy-source-'+str(index)
+            self.store.initialize_connector(TENANT,source)
+            report={'synthetic':True,'evidence':[{'connector_id':source,**legacy_hash}]}
+            identity=self.store.begin(TENANT,OWNER)
+            self.store.finish(TENANT,OWNER,identity,report,'completed')
+            review=self.store.request_review(TENANT,OWNER,identity)
+            self.store.decide_review(TENANT,REVIEWER,identity,review['review_id'],'approved')
+            bootstrap=self.approved_response(identity)
+            self.assertIsNone(self.store.connector_administration(TENANT,source)['last_review'])
+            consumed=self.store.consume_response(TENANT,OWNER,bootstrap['id'],bootstrap['approval_id'])
+            self.assertEqual(consumed['state'],'consumed')
+            current=self.approved_response(identity)
+            self.store.disable(TENANT,'admin',source)
+            state=self.store.connector_administration(TENANT,source)
+            self.store.change_connector_state(TENANT,'admin',source,state['revision'],True,
+                'Reviewed activation now requires exact evidence binding.',manifest_hash='a'*64)
+            before=self.store.audit_rows(TENANT)
+            with self.assertRaisesRegex(Work4ceError,'response_connector_unavailable') as caught:
+                self.store.consume_response(TENANT,OWNER,current['id'],current['approval_id'])
+            self.assertEqual(caught.exception.status,403)
+            self.assertEqual(self.store.get_response(TENANT,current['id'])['state'],'approved')
+            self.assertIsNone(self.store.get_response(TENANT,current['id'])['simulation_result'])
+            self.assertEqual(self.store.audit_rows(TENANT),before)
+            self.assertEqual(self.store.get(TENANT,identity)['report'],report)
+        # An explicitly present empty hash is malformed, even before a stored review.
+        self.store.initialize_connector(TENANT,'malformed-source')
+        identity=self.store.begin(TENANT,OWNER)
+        self.store.finish(TENANT,OWNER,identity,{'synthetic':True,
+            'evidence':[{'connector_id':'malformed-source','manifest_hash':''}]},'completed')
+        review=self.store.request_review(TENANT,OWNER,identity)
+        self.store.decide_review(TENANT,REVIEWER,identity,review['review_id'],'approved')
+        approved=self.approved_response(identity)
+        before=self.store.audit_rows(TENANT)
+        with self.assertRaisesRegex(Work4ceError,'response_connector_unavailable'):
+            self.store.consume_response(TENANT,OWNER,approved['id'],approved['approval_id'])
+        self.assertEqual(self.store.get_response(TENANT,approved['id'])['state'],'approved')
+        self.assertEqual(self.store.audit_rows(TENANT),before)
+
     def test_two_stores_consume_approval_exactly_once(self):
         approved = self.approved_response()
         clients = [Store(self.database),Store(self.database)]

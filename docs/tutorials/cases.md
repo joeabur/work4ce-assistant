@@ -4,7 +4,7 @@ Case coordination adds operational responsibility to an investigation. It suppor
 
 ## Prepare
 
-Run the normal setup/build and start the API/reference services. SQLite automatically upgrades through the current `0007_incident_sources` head. Before starting the updated API with PostgreSQL, back up useful data and run:
+Run the normal setup/build and start the API/reference services. SQLite automatically upgrades through the current `0008_connector_controls` head. Before starting the updated API with PostgreSQL, back up useful data and run:
 
 ```sh
 .venv/bin/python -m work4ce_assistant database migrate

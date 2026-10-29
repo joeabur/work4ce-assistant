@@ -65,16 +65,21 @@ class Gateway:
             and c.execution_class == "read" and not c.side_effects and not c.approval_required
         )
 
+    def _active(self, entry: Registration, context: ExecutionContext) -> bool:
+        state=self.store.connector_administration(context.tenant_id,entry.manifest.connector_id)
+        review=state['last_review']
+        return state['enabled'] and (review is None or review['manifest_hash']==entry.manifest_hash)
+
     def list_connectors(self, context: ExecutionContext) -> list[dict[str, Any]]:
         return [{"connector_id": e.manifest.connector_id, "protocol": e.manifest.protocol,
-                 "enabled": self.store.enabled(context.tenant_id, e.manifest.connector_id),
+                 "enabled": self._active(e,context),
                  "synthetic": e.manifest.synthetic}
                 for e in self._entries.values() if self._permitted(e, context)]
 
     def capabilities(self, context: ExecutionContext) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         for entry in self._entries.values():
-            if self._permitted(entry, context) and self.store.enabled(context.tenant_id, entry.manifest.connector_id):
+            if self._permitted(entry, context) and self._active(entry,context):
                 cap = entry.manifest.capability
                 seen[cap.capability_id + ":" + cap.version] = cap.model_dump()
         return list(seen.values())
@@ -93,7 +98,7 @@ class Gateway:
         identity = resolved.get("connector_id")
         entry = self._entries.get(identity) if isinstance(identity, str) else None
         if (entry is None or not self._permitted(entry, context)
-                or not self.store.enabled(context.tenant_id, identity)):
+                or not self._active(entry,context)):
             raise Work4ceError("no_authorized_connector", 403)
         manifest = entry.manifest
         if (resolved.get("manifest_hash") != entry.manifest_hash
@@ -111,7 +116,7 @@ class Gateway:
                     if e.manifest.capability.capability_id == capability_id
                     and e.manifest.capability.version == version
                     and self._permitted(e, context)
-                    and self.store.enabled(context.tenant_id, e.manifest.connector_id)]
+                    and self._active(e,context)]
         if not eligible:
             self.store.audit(context.tenant_id, context.subject, "capability.execute", capability_id, "denied")
             raise Work4ceError("no_authorized_connector", 403)
@@ -134,7 +139,7 @@ class Gateway:
                             if not await entry.connector.health():
                                 raise Work4ceError("connector_unhealthy", 503)
                         # Re-evaluate revocation immediately before entering the adapter.
-                        if not self.store.enabled(context.tenant_id, m.connector_id):
+                        if not self._active(entry,context):
                             continue
                         if before_invoke is not None:
                             before_invoke()

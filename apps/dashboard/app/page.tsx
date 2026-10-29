@@ -152,6 +152,22 @@ type Source = {
   enabled: boolean;
   synthetic: boolean;
 };
+type ConnectorChange = { actor: string; at: string; reason: string };
+type ConnectorAdministration = Source & {
+  revision: number;
+  manifest_hash: string;
+  capability_id: string;
+  capability_version: string;
+  description: string;
+  required_permissions: string[];
+  resource_scope: string;
+  data_classification: string;
+  execution_class: string;
+  side_effects: boolean;
+  approval_required: boolean;
+  last_change: ConnectorChange | null;
+  last_review: (ConnectorChange & { manifest_hash: string }) | null;
+};
 type OnboardingStatus = {
   mode: "demo";
   synthetic: true;
@@ -182,6 +198,11 @@ type View =
   | "integrations";
 type Modal =
   | { kind: "new" }
+  | {
+      kind: "connector_state";
+      source: ConnectorAdministration;
+      action: "disable" | "review-enable";
+    }
   | { kind: "incident_create"; record: Report }
   | { kind: "incident_status"; incident: Incident; status: IncidentStatus }
   | { kind: "incident_note"; incident: Incident; sources: IncidentSource[] }
@@ -223,6 +244,18 @@ const labels: Record<string, string> = {
   needs_analyst_review: "Analyst review needed",
 };
 const messages: Record<string, string> = {
+  connector_revision_conflict:
+    "This source changed. Refresh and review its latest state before trying again.",
+  connector_definition_changed:
+    "This source’s discovered definition changed. It must match the approved registered capability before it can be enabled.",
+  connector_contract_mismatch:
+    "This source does not match its approved registered capability. Ask your operator to review its definition.",
+  connector_review_mismatch:
+    "This review no longer matches the registered source definition. Refresh and review it again.",
+  connector_unhealthy:
+    "This source did not pass its health check. It remains disabled. Check its service, then try again.",
+  connector_discovery_failed:
+    "The source definition could not be verified. It remains disabled. Check its service, then try again.",
   invalid_queue_cursor:
     "This queue position is no longer valid. Refresh the workspace to load the latest cases and incidents.",
   incident_source_conflict:
@@ -529,6 +562,9 @@ export default function Page() {
     [reviews, setReviews] = useState<Review[]>([]),
     [responses, setResponses] = useState<Proposal[]>([]),
     [sources, setSources] = useState<Source[]>([]),
+    [connectorAdministration, setConnectorAdministration] = useState<
+      ConnectorAdministration[]
+    >([]),
     [healthy, setHealthy] = useState<string[]>([]),
     [selected, setSelected] = useState<Report | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null),
@@ -606,6 +642,7 @@ export default function Page() {
     setReviews([]);
     setResponses([]);
     setSources([]);
+    setConnectorAdministration([]);
     setHealthy([]);
     setSelected(null);
     setModal(null);
@@ -747,6 +784,7 @@ export default function Page() {
       setIncidentLoading(false);
       setIncidentLoaded(false);
       setLoading(true);
+      setConnectorAdministration([]);
       try {
         const [
           items,
@@ -757,6 +795,7 @@ export default function Page() {
           coordinated,
           candidates,
           incidentRows,
+          connectorControls,
         ] = await Promise.all([
           request<CasePage>("/investigations/history?limit=50"),
           identity.permissions.includes("responses:read")
@@ -786,9 +825,13 @@ export default function Page() {
                 items: [],
                 next_cursor: null,
               }),
+          identity.permissions.includes("connectors:admin")
+            ? request<ConnectorAdministration[]>("/connectors/administration")
+            : Promise.resolve<ConnectorAdministration[]>([]),
         ]);
         if (generation !== epoch.current || version !== historyVersion.current)
           return;
+        setConnectorAdministration(connectorControls);
         setCases(items.items);
         setNextCursor(items.next_cursor);
         setHistoryLoaded(true);
@@ -1147,6 +1190,8 @@ export default function Page() {
           cause instanceof RequestError &&
           [
             "case_revision_conflict",
+            "connector_revision_conflict",
+            "connector_review_mismatch",
             "incident_revision_conflict",
             "incident_exists",
             "incident_source_conflict",
@@ -1170,6 +1215,40 @@ export default function Page() {
     const data = new FormData(e.currentTarget),
       current = modal,
       comment = String(data.get("comment") || "");
+    if (current.kind === "connector_state") {
+      if (!has("connectors:admin") || loading || workspaceRefreshing.current)
+        return;
+      const reason = String(data.get("reason") || "").trim();
+      if (!reason) {
+        setError("Enter a reason for this source change.");
+        return;
+      }
+      if (current.action === "review-enable" && data.get("reviewed") !== "on") {
+        setError(
+          "Confirm that you reviewed the registered capability before enabling this source.",
+        );
+        return;
+      }
+      return act(
+        () =>
+          request(
+            `/connectors/${encodeURIComponent(current.source.connector_id)}/administration/${current.action}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                expected_revision: current.source.revision,
+                reason,
+                ...(current.action === "review-enable"
+                  ? { manifest_hash: current.source.manifest_hash }
+                  : {}),
+              }),
+            },
+          ),
+        current.action === "disable"
+          ? "Source disabled. New source use and checkpoint access follow current backend policy."
+          : "Source reviewed and enabled.",
+      );
+    }
     if (current.kind === "new") {
       const generation = epoch.current;
       const payload = {
@@ -3399,43 +3478,126 @@ export default function Page() {
                 </div>
               </div>
               <section className="integration-grid">
-                {sources.map((source) => (
-                  <article
-                    className="panel integration-card"
-                    key={source.connector_id}
-                  >
-                    <div className="integration-card-top">
-                      <span className="source-icon">
-                        {source.protocol.toUpperCase()}
-                      </span>
-                      <span
-                        className={`source-status ${source.enabled && healthy.includes(source.connector_id) ? "available" : ""}`}
-                      >
-                        <span />
-                        {!source.enabled
-                          ? "Disabled"
-                          : healthy.includes(source.connector_id)
-                            ? "Available"
-                            : "Unavailable"}
-                      </span>
-                    </div>
-                    <h2>
-                      {source.protocol === "mcp"
-                        ? "MCP security events"
-                        : source.protocol === "rest"
-                          ? "REST security events"
-                          : source.connector_id}
-                    </h2>
-                    <p>Synthetic security event collection</p>
-                    <div className="capability-chip">
-                      security.events.search <span>v1.0</span>
-                    </div>
-                    <div className="integration-card-bottom">
-                      <code>{source.connector_id}</code>
-                      <span>Synthetic</span>
-                    </div>
-                  </article>
-                ))}
+                {sources.map((source) => {
+                  const control = connectorAdministration.find(
+                      (item) => item.connector_id === source.connector_id,
+                    ),
+                    state = control || source;
+                  return (
+                    <article
+                      className="panel integration-card"
+                      key={source.connector_id}
+                      data-testid={`source-card-${source.connector_id}`}
+                    >
+                      <div className="integration-card-top">
+                        <span className="source-icon">
+                          {source.protocol.toUpperCase()}
+                        </span>
+                        <span
+                          className={`source-status ${state.enabled && healthy.includes(source.connector_id) ? "available" : ""}`}
+                        >
+                          <span />
+                          {!state.enabled
+                            ? "Disabled"
+                            : healthy.includes(source.connector_id)
+                              ? "Available"
+                              : "Unavailable"}
+                        </span>
+                      </div>
+                      <h2>
+                        {source.protocol === "mcp"
+                          ? "MCP security events"
+                          : source.protocol === "rest"
+                            ? "REST security events"
+                            : source.connector_id}
+                      </h2>
+                      <p>Synthetic security event collection</p>
+                      <div className="capability-chip">
+                        {control?.capability_id || "security.events.search"}{" "}
+                        <span>v{control?.capability_version || "1.0"}</span>
+                      </div>
+                      <div className="integration-card-bottom">
+                        <code>{source.connector_id}</code>
+                        <span>Synthetic</span>
+                      </div>
+                      {has("connectors:admin") && (
+                        <div className="connector-controls">
+                          {control ? (
+                            <>
+                              <div className="connector-control-heading">
+                                <strong>Source administration</strong>
+                                <span>Revision {control.revision}</span>
+                              </div>
+                              {control.last_review &&
+                                control.last_review.manifest_hash !==
+                                  control.manifest_hash && (
+                                  <p className="field-note" role="status">
+                                    This definition changed after its last
+                                    enable review. Disable the source, then
+                                    review the current definition before
+                                    enabling it.
+                                  </p>
+                                )}
+                              {control.last_change && (
+                                <div className="connector-change">
+                                  <strong>Last state change</strong>
+                                  <span>
+                                    {control.last_change.actor} ·{" "}
+                                    {date(control.last_change.at)}
+                                  </span>
+                                  <p>{control.last_change.reason}</p>
+                                </div>
+                              )}
+                              {control.last_review && (
+                                <div className="connector-change">
+                                  <strong>Last enable review</strong>
+                                  <span>
+                                    {control.last_review.actor} ·{" "}
+                                    {date(control.last_review.at)}
+                                  </span>
+                                  <p>{control.last_review.reason}</p>
+                                  <code>
+                                    {control.last_review.manifest_hash}
+                                  </code>
+                                </div>
+                              )}
+                              <button
+                                className={`button ${control.enabled ? "secondary" : "primary"} small`}
+                                disabled={loading || busy}
+                                onClick={() => {
+                                  if (
+                                    loading ||
+                                    busy ||
+                                    workspaceRefreshing.current
+                                  )
+                                    return;
+                                  setError("");
+                                  setModal({
+                                    kind: "connector_state",
+                                    source: control,
+                                    action: control.enabled
+                                      ? "disable"
+                                      : "review-enable",
+                                  });
+                                }}
+                              >
+                                {control.enabled
+                                  ? "Disable source"
+                                  : "Review and enable"}
+                              </button>
+                            </>
+                          ) : (
+                            <p className="field-note">
+                              {loading
+                                ? "Loading source controls…"
+                                : "Source controls are unavailable. Refresh to load the current state."}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
               </section>
               {!sources.length && (
                 <section className="panel">
@@ -3460,37 +3622,125 @@ export default function Page() {
       {modal && (
         <Dialog
           title={
-            modal.kind === "incident_create"
-              ? "Create incident"
-              : modal.kind === "incident_status"
-                ? incidentStatusTitle(modal.status)
-                : modal.kind === "incident_link"
-                  ? "Link investigation"
-                  : modal.kind === "incident_note"
-                    ? "Add incident note"
-                    : modal.kind === "case_assign"
-                      ? "Assign case"
-                      : modal.kind === "case_escalate"
-                        ? "Escalate case"
-                        : modal.kind === "case_ack"
-                          ? "Acknowledge escalation"
-                          : modal.kind === "new"
-                            ? "Start an investigation"
-                            : modal.kind === "review"
-                              ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
-                              : modal.kind === "proposal"
-                                ? "Propose a synthetic dry run"
-                                : modal.kind === "decision"
-                                  ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
-                                  : modal.kind === "simulate"
-                                    ? "Record this simulation?"
-                                    : "Revoke this request?"
+            modal.kind === "connector_state"
+              ? modal.action === "disable"
+                ? "Disable source"
+                : "Review and enable source"
+              : modal.kind === "incident_create"
+                ? "Create incident"
+                : modal.kind === "incident_status"
+                  ? incidentStatusTitle(modal.status)
+                  : modal.kind === "incident_link"
+                    ? "Link investigation"
+                    : modal.kind === "incident_note"
+                      ? "Add incident note"
+                      : modal.kind === "case_assign"
+                        ? "Assign case"
+                        : modal.kind === "case_escalate"
+                          ? "Escalate case"
+                          : modal.kind === "case_ack"
+                            ? "Acknowledge escalation"
+                            : modal.kind === "new"
+                              ? "Start an investigation"
+                              : modal.kind === "review"
+                                ? `${modal.decision === "approved" ? "Approve" : "Reject"} report review`
+                                : modal.kind === "proposal"
+                                  ? "Propose a synthetic dry run"
+                                  : modal.kind === "decision"
+                                    ? `${modal.decision === "approved" ? "Approve" : "Reject"} dry-run request`
+                                    : modal.kind === "simulate"
+                                      ? "Record this simulation?"
+                                      : "Revoke this request?"
           }
           busy={busy}
           close={closeModal}
         >
           <form onSubmit={submit}>
-            {modal.kind === "incident_create" ? (
+            {modal.kind === "connector_state" ? (
+              <>
+                <p className="modal-copy">
+                  {modal.action === "disable"
+                    ? "Disable this registered source for new source use and checkpoint authorization. Completed evidence stays in its reports; this does not cancel work already collected."
+                    : "Review the registered capability below before re-enabling this source. The backend checks fresh discovery against this exact definition and verifies source health. It does not search events or make a model inference during this check."}
+                </p>
+                <dl className="connector-review-details">
+                  <div>
+                    <dt>Source</dt>
+                    <dd>
+                      {modal.source.connector_id}
+                      <small>
+                        Revision {modal.source.revision} ·{" "}
+                        {modal.source.protocol.toUpperCase()}
+                      </small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Capability</dt>
+                    <dd>
+                      {modal.source.capability_id}
+                      <small>Version {modal.source.capability_version}</small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Description</dt>
+                    <dd>{modal.source.description}</dd>
+                  </div>
+                  <div>
+                    <dt>Scope and classification</dt>
+                    <dd>
+                      {modal.source.resource_scope} ·{" "}
+                      {modal.source.data_classification}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Required permissions</dt>
+                    <dd>
+                      {modal.source.required_permissions.join(", ") || "None"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Execution policy</dt>
+                    <dd>
+                      {modal.source.execution_class}
+                      <small>
+                        {modal.source.side_effects
+                          ? "Side effects declared"
+                          : "No side effects declared"}{" "}
+                        ·{" "}
+                        {modal.source.approval_required
+                          ? "Approval required"
+                          : "No execution approval required"}
+                      </small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Registered definition hash</dt>
+                    <dd>
+                      <code>{modal.source.manifest_hash}</code>
+                    </dd>
+                  </div>
+                </dl>
+                <label htmlFor="connector-change-reason">Change reason</label>
+                <textarea
+                  id="connector-change-reason"
+                  name="reason"
+                  rows={4}
+                  minLength={1}
+                  maxLength={1000}
+                  required
+                  autoFocus
+                />
+                {modal.action === "review-enable" && (
+                  <label className="connector-review-confirmation">
+                    <input type="checkbox" name="reviewed" required />
+                    <span>
+                      I reviewed this registered capability and approve
+                      re-enabling it
+                    </span>
+                  </label>
+                )}
+              </>
+            ) : modal.kind === "incident_create" ? (
               <>
                 <p className="modal-copy">
                   Track incident work for INV-{short(modal.record.id)}. Case
@@ -3858,31 +4108,35 @@ export default function Page() {
               >
                 {busy
                   ? "Working…"
-                  : modal.kind === "incident_create"
-                    ? "Create incident"
-                    : modal.kind === "incident_status"
-                      ? "Confirm status"
-                      : modal.kind === "incident_link"
-                        ? "Link investigation"
-                        : modal.kind === "incident_note"
-                          ? "Add note"
-                          : modal.kind === "case_assign"
-                            ? "Save assignment"
-                            : modal.kind === "case_escalate"
-                              ? "Request escalation"
-                              : modal.kind === "case_ack"
-                                ? "Acknowledge"
-                                : modal.kind === "new"
-                                  ? "Investigate"
-                                  : modal.kind === "proposal"
-                                    ? "Request approval"
-                                    : modal.kind === "simulate"
-                                      ? "Record dry run"
-                                      : modal.kind === "revoke"
-                                        ? "Revoke request"
-                                        : modal.decision === "approved"
-                                          ? "Approve"
-                                          : "Reject"}
+                  : modal.kind === "connector_state"
+                    ? modal.action === "disable"
+                      ? "Disable source"
+                      : "Review and enable"
+                    : modal.kind === "incident_create"
+                      ? "Create incident"
+                      : modal.kind === "incident_status"
+                        ? "Confirm status"
+                        : modal.kind === "incident_link"
+                          ? "Link investigation"
+                          : modal.kind === "incident_note"
+                            ? "Add note"
+                            : modal.kind === "case_assign"
+                              ? "Save assignment"
+                              : modal.kind === "case_escalate"
+                                ? "Request escalation"
+                                : modal.kind === "case_ack"
+                                  ? "Acknowledge"
+                                  : modal.kind === "new"
+                                    ? "Investigate"
+                                    : modal.kind === "proposal"
+                                      ? "Request approval"
+                                      : modal.kind === "simulate"
+                                        ? "Record dry run"
+                                        : modal.kind === "revoke"
+                                          ? "Revoke request"
+                                          : modal.decision === "approved"
+                                            ? "Approve"
+                                            : "Reject"}
               </button>
             </div>
           </form>

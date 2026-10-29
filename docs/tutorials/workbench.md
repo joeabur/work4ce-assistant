@@ -34,7 +34,7 @@ Collection and human acceptance are different states. Required review displays `
 
 Every result records `dry_run:true, performed:false`. No endpoint changes and no response connector or command executes. Expired, rejected, revoked, reused or mismatched approvals fail closed. UI permissions never replace backend authorization.
 
-**Integrations** shows registered source metadata and health from the backend. Registration, enablement and general connector administration are not implemented in this view.
+**Integrations** shows registered source metadata and health from the backend. Administrators can disable a source or review/re-enable it with current revision and definition-hash bindings. Ordinary analysts/reviewers retain the status view. See [connector controls](connector-controls.md). Registration, configuration and credential editing remain operator-managed.
 
 ## Verify
 
@@ -45,7 +45,7 @@ Every result records `dry_run:true, performed:false`. No endpoint changes and no
 
 The browser runner requires Chromium/Chrome on PATH or `WORK4CE_BROWSER_EXECUTABLE` pointing to a compatible executable. It creates its own temporary database, random credentials and local API/fixture processes, then cleans up those resources. Playwright is pinned in the Python development lock. No live credentials or external browser service are needed.
 
-Nine browser checks cover the full analyst/reviewer/approval/simulation flow, memory-only sessions/reload clearing, literal hostile-markup display, a 390px mobile layout, older-case pagination with delayed-response refresh protection, assignment/escalation with stale-dialog rejection, incident notes/resolution/closing/reopening with concurrent view loading, multi-investigation links with source-specific citations, both operational queues beyond 50 records with delayed-page refresh fencing, and guided onboarding with failed rechecks and late-response protection. Screenshots are written under ignored `.local/`. Backend tests separately verify owner/tenant scoping, filtered summaries, integrity checks, cache headers and CSP/static behavior. Test evidence is recorded in [release readiness](../release-readiness.md).
+Ten browser checks cover the full analyst/reviewer/approval/simulation flow, memory-only sessions/reload clearing, literal hostile-markup display, a 390px mobile layout, older-case pagination with delayed-response refresh protection, assignment/escalation with stale-dialog rejection, incident notes/resolution/closing/reopening with concurrent view loading, multi-investigation links with source-specific citations, both operational queues beyond 50 records with delayed-page refresh fencing, guided onboarding with failed rechecks and late-response protection, and admin source controls with stale revisions and recovery after all-source disablement. Screenshots are written under ignored `.local/`. Backend tests separately verify owner/tenant scoping, filtered summaries, integrity checks, cache headers and CSP/static behavior. Test evidence is recorded in [release readiness](../release-readiness.md).
 
 ## Limits and security
 

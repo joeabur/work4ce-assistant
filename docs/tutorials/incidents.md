@@ -4,7 +4,7 @@ Create an incident from a collected synthetic investigation to track human work,
 
 ## Prepare and create
 
-Use the normal dashboard build/start workflow. SQLite upgrades automatically to `0007_incident_sources`. Before starting the updated API against PostgreSQL, back up useful data and run:
+Use the normal dashboard build/start workflow. SQLite upgrades automatically to `0008_connector_controls`. Before starting the updated API against PostgreSQL, back up useful data and run:
 
 ```sh
 .venv/bin/python -m work4ce_assistant database migrate

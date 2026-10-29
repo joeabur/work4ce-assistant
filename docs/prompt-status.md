@@ -1,10 +1,10 @@
 # Master specification implementation status
 
-Increment sections retain the evidence and gaps recorded when each increment shipped; the final guided-onboarding section records the latest delivery.
+Increment sections retain the evidence and gaps recorded when each increment shipped; the final connector-administration section records the latest delivery.
 
 This matrix maps the requested product to actual delivery. It is a scope and gap record, not an architecture-completion or production-readiness claim. The authoritative request is preserved unchanged in `MASTER_SPECIFICATION.md`. See `release-readiness.md` for executed test counts.
 
-The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 392-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
+The current product is a synthetic, read-only investigation foundation with deterministic default behavior and optional constrained model assistance. It is not an autonomous AI SOC platform yet. The first vertical slice and PostgreSQL foundation are integration-tested; the OIDC adapter is fixture-tested with real signatures and mocked HTTPS. Durable deterministic workflows are integration-tested: the complete 431-test PostgreSQL/SQLite suite passed with zero skips, including real worker termination after checkpoint commit and explicit resume without another REST search.
 
 ## Requested foundations and delivery
 
@@ -56,7 +56,7 @@ The current product is a synthetic, read-only investigation foundation with dete
 
 ## Phase 5 quality gate
 
-Phase 5 remains **in_progress** despite the passing 392-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
+Phase 5 remains **in_progress** despite the passing 431-test suite. Implemented controls include durable orchestration, manual recovery, invocation budgets and optional structured plan/quotation assistance with persistent model usage. Live-model verification, general multi-step reasoning, coordinated review, tokenizer/billing assurance and distributed execution observability remain incomplete. Passing durable workflow tests does not complete Phase 5 or sensitive response acceptance H.
 
 The structured model increment implements part of section 11 and Phase 5. The default and offline fixture are deterministic; the HTTP adapter is fixture-tested. No live model, broad SOC reasoning accuracy, production deployment or response approval completion is claimed.
 
@@ -107,3 +107,14 @@ Master specification §20.2 / Phase 10 now has a Getting started flow: Welcome, 
 The full PostgreSQL/SQLite suite passed **392 tests in 128.362 seconds with zero skips**, including 11 SQLite onboarding checks, one PostgreSQL observation/revocation check and a new signed-token role/admin-mapping test. **Nine Chromium checks passed in 59.679 seconds**: actual guided collection/citations, unchanged connector configuration, degraded/failed rechecks, late results across navigation/sign-out, and mobile/session checks. Production static build/typecheck, installed-wheel onboarding API/assets/auth/migration7, all 42 pins and pip check passed. Desktop/mobile layouts were inspected. No schema or dependency changes were required.
 
 This is partial first-run delivery: account/provider/connector/MCP provisioning, security-policy editing and OIDC redirect login remain incomplete. Setup does not verify a live IdP, inference, provider billing, deployment or recovery. Administrator presence describes trusted configuration rather than a tested admin login. Readiness is a current observation rather than future authority. Production remains disabled. See [guided onboarding](tutorials/onboarding.md).
+
+
+## Connector administration increment
+
+Master specification §8.2/19.1 now includes admin-only disable and review/re-enable controls for already trusted registered synthetic read sources. Fresh capability discovery, health, exact pinned hash, current scope and expected revision gate activation. Migration `0008_connector_controls` preserves old enabled/disabled rows and all unrelated records while adding current change/last enable-review metadata. Legacy disable remains compatible and advances the revision even when already disabled, fencing an in-flight enable. State/review/audit commit atomically. Stored review hashes must also match runtime definitions after re-registration; changed definitions are inactive until reviewed again.
+
+The final PostgreSQL/SQLite suite passed **431 tests in 129.209 seconds with zero skips**. This adds 21 connector-control storage/migration tests, 12 admin API/policy tests, a signed-token admin mapping test and five review-consumption regression cases. **Ten Chromium checks passed in 71.655 seconds**, including actual admin controls, literal reasons, stale dialogs, complete source disablement/recovery, role switching and a real investigation after recovery. Production static build/typecheck, isolated installed-wheel assets/auth/admin lifecycle/legacy-disable/revision/migration8, all 42 dependency pins and pip check passed. Desktop/mobile controls were inspected; no tested CSP violations occurred. No dependencies were added.
+
+Review found a source-definition race between response policy and final approval consumption. The final transaction now locks source state and requires a nonnull reviewed definition to match every immutable evidence binding. Concurrent reactivation under a different hash leaves the approval unconsumed. Missing legacy hashes are compatible only with bootstrap-null review; malformed hashes fail closed. The three new SQLite/policy regressions fail against the baseline consumption code and pass with this fix; equivalent shared PostgreSQL cases pass in the final suite. The earlier 426-test/ten-browser run passed before this additional review finding; the full checks above were rerun after the fix.
+
+Registration/configuration, credential/network/dependency/isolation review, complete historical reason content, live vendor verification and production deployment remain incomplete. Admin reasons stay on scoped APIs; ordinary source lists retain their four-field contract. PostgreSQL operators must migrate before startup; SQLite auto-upgrades known schemas after data backup. Production remains disabled. See [connector controls](tutorials/connector-controls.md).

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .auth import OIDCConfig, OIDCVerifier
 from .cases import CaseService
 from .connectors import McpConnector, RestConnector
+from .connector_admin import ConnectorAdministration
 from .contracts import CapabilityManifest, ConnectorManifest, ExecutionContext, Work4ceError
 from .fixtures import SEARCH_CAPABILITY
 from .gateway import Gateway
@@ -282,6 +283,16 @@ class IncidentLink(IncidentRevision):
     comment: str = Field(min_length=1,max_length=2000)
 
 
+class ConnectorStateChange(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    expected_revision: int = Field(ge=0,le=2_147_483_646)
+    reason: str = Field(min_length=1,max_length=1000)
+
+
+class ConnectorReviewEnable(ConnectorStateChange):
+    manifest_hash: str = Field(min_length=64,max_length=64,pattern=r"^[0-9a-f]{64}$")
+
+
 def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: OIDCVerifier | None = None, reasoner: Reasoner | None = None) -> FastAPI:
     own_store = gateway is None
     store = gateway.store if gateway else Store(settings.database)
@@ -307,6 +318,7 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
                  frozenset(subject for subject,role in settings.oidc_subject_roles if role in {'analyst','admin'}))
     cases = CaseService(store,TENANT,assignees)
     incidents = IncidentService(cases)
+    connector_admin = ConnectorAdministration(gateway)
     slots = asyncio.Semaphore(4)
     own_verifier = settings.auth_mode == "oidc" and verifier is None
     if own_verifier:
@@ -504,6 +516,18 @@ def create_app(settings: Settings, gateway: Gateway | None = None, *, verifier: 
     @app.get("/connectors")
     async def connectors(ctx: Context):
         return gateway.list_connectors(ctx)
+
+    @app.get("/connectors/administration")
+    async def connector_administration(ctx: Context):
+        return connector_admin.list(ctx)
+
+    @app.post("/connectors/{identity}/administration/disable")
+    async def disable_connector(identity: str, body: ConnectorStateChange, ctx: Context):
+        return connector_admin.disable(ctx,identity,body.expected_revision,body.reason)
+
+    @app.post("/connectors/{identity}/administration/review-enable")
+    async def review_enable_connector(identity: str, body: ConnectorReviewEnable, ctx: Context):
+        return await connector_admin.review_enable(ctx,identity,body.expected_revision,body.manifest_hash,body.reason)
 
     @app.post("/connectors/{identity}/disable")
     async def disable(identity: str, ctx: Context):

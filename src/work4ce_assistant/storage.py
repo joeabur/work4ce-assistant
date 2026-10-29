@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 from .contracts import Work4ceError, canonical, digest
 from .pagination import decode_history_cursor, encode_history_cursor, decode_queue_cursor, encode_queue_cursor
 
-HEAD = "0007_incident_sources"
+HEAD = "0008_connector_controls"
 metadata = MetaData()
 investigations = Table("investigations", metadata,
     Column("id", Text, primary_key=True), Column("tenant", Text, nullable=False),
@@ -42,7 +42,9 @@ audit_table = Table("audit", metadata,
     Column("outcome", Text, nullable=False), Column("timestamp", Text, nullable=False))
 connector_state = Table("connector_state", metadata,
     Column("tenant", Text, primary_key=True), Column("id", Text, primary_key=True),
-    Column("enabled", Integer, nullable=False))
+    Column("enabled", Integer, nullable=False), Column("revision", Integer, nullable=False,server_default="0"),
+    Column("changed_by",Text), Column("changed_at",Text), Column("change_reason",Text),
+    Column("review_manifest_hash",Text), Column("reviewed_by",Text), Column("reviewed_at",Text), Column("review_reason",Text))
 
 workflow_owner_locks = Table("workflow_owner_locks", metadata,
     Column("tenant", Text, primary_key=True), Column("subject", Text, primary_key=True))
@@ -375,9 +377,101 @@ class Store:
             connection.execute(insert(connector_state).values(tenant=tenant, id=connector_id, enabled=1).on_conflict_do_nothing(index_elements=["tenant", "id"]))
 
     def disable(self, tenant: str, subject: str, connector_id: str) -> None:
+        self._connector_scope(tenant,connector_id,subject)
+        if not self._case_subject(subject):
+            raise Work4ceError('invalid_connector_update',422)
         with self._connection(write=True) as connection:
-            connection.execute(update(connector_state).where(connector_state.c.tenant == tenant, connector_state.c.id == connector_id).values(enabled=0))
+            current=self._connector_record(connection,tenant,connector_id,lock=True)
+            if current['revision']>=2147483647:
+                raise Work4ceError('connector_revision_conflict',409)
+            connection.execute(update(connector_state).where(connector_state.c.tenant == tenant, connector_state.c.id == connector_id)
+                .values(enabled=0,revision=current['revision']+1,changed_by=subject,changed_at=now(),
+                        change_reason='Disabled through the legacy administration API.'))
             self._audit(connection, tenant, subject, "connector.disable", connector_id, "disabled")
+
+    @staticmethod
+    def _connector_scope(tenant: str, connector_id: str, subject: str | None=None) -> None:
+        if (not isinstance(tenant,str) or not 1 <= len(tenant) <= 200 or not tenant.strip()
+                or not isinstance(connector_id,str) or not 2 <= len(connector_id) <= 80
+                or re.fullmatch(r'[a-z][a-z0-9-]+',connector_id) is None
+                or subject is not None and not Store._case_subject(subject)):
+            raise Work4ceError('invalid_connector_update',422)
+
+    @classmethod
+    def _connector_data(cls,row) -> dict[str,Any]:
+        data=dict(row._mapping) if hasattr(row,'_mapping') else dict(row)
+        try:
+            if (type(data['enabled']) is not int or data['enabled'] not in (0,1)
+                    or type(data['revision']) is not int or not 0 <= data['revision'] <= 2147483647):
+                raise ValueError('invalid connector state')
+            change=(data['changed_by'],data['changed_at'],data['change_reason'])
+            review=(data['reviewed_by'],data['reviewed_at'],data['review_reason'],data['review_manifest_hash'])
+            def valid_metadata(actor,instant,reason):
+                return (cls._case_subject(actor) and cls._case_timestamp(instant) and isinstance(reason,str)
+                        and 1 <= len(reason) <= 1000 and reason==reason.strip())
+            changed=any(value is not None for value in change)
+            reviewed=any(value is not None for value in review)
+            if (changed and not valid_metadata(*change) or reviewed and not valid_metadata(*review[:3])
+                    or reviewed and (not isinstance(review[3],str) or re.fullmatch(r'[0-9a-f]{64}',review[3]) is None)
+                    or data['revision']==0 and (changed or reviewed)
+                    or data['revision']>0 and not changed):
+                raise ValueError('invalid connector metadata')
+            if reviewed:
+                if (not changed or datetime.fromisoformat(review[1].replace('Z','+00:00'))>
+                        datetime.fromisoformat(change[1].replace('Z','+00:00'))):
+                    raise ValueError('review metadata chronology mismatch')
+            if data['enabled']==1 and data['revision']>0 and (not reviewed or change!=review[:3]):
+                raise ValueError('enabled connector lacks current review')
+        except (ValueError,TypeError,KeyError,AttributeError):
+            raise Work4ceError('connector_state_integrity_failure',500) from None
+        return {'enabled':data['enabled']==1,'revision':data['revision'],
+            'last_change':{'actor':change[0],'at':change[1],'reason':change[2]} if changed else None,
+            'last_review':{'manifest_hash':review[3],'actor':review[0],'at':review[1],'reason':review[2]} if reviewed else None}
+
+    def _connector_record(self,connection,tenant,connector_id,*,lock=False) -> dict[str,Any]:
+        predicate=and_(connector_state.c.tenant==tenant,connector_state.c.id==connector_id)
+        if lock and connection.dialect.name=='sqlite':
+            # Acquire the SQLite writer before reading the revision; separate Store
+            # instances otherwise both read a revision before upgrading their locks.
+            connection.execute(update(connector_state).where(predicate).values(enabled=connector_state.c.enabled))
+        statement=select(connector_state).where(predicate)
+        if lock:
+            statement=statement.with_for_update()
+        row=connection.execute(statement).first()
+        if row is None:
+            raise Work4ceError('connector_not_found',404)
+        return self._connector_data(row)
+
+    def connector_administration(self, tenant: str, connector_id: str) -> dict[str,Any]:
+        self._connector_scope(tenant,connector_id)
+        with self._connection() as connection:
+            return self._connector_record(connection,tenant,connector_id)
+
+    def change_connector_state(self, tenant: str, subject: str, connector_id: str, expected_revision: int,
+                               enabled: bool, reason: str, *, manifest_hash: str | None=None) -> dict[str,Any]:
+        self._connector_scope(tenant,connector_id,subject)
+        if (not self._case_subject(subject) or type(expected_revision) is not int or not 0 <= expected_revision <= 2147483646 or type(enabled) is not bool
+                or not isinstance(reason,str) or not 1 <= len(reason) <= 1000 or not reason.strip()
+                or enabled and (not isinstance(manifest_hash,str) or re.fullmatch(r'[0-9a-f]{64}',manifest_hash) is None)
+                or not enabled and manifest_hash is not None):
+            raise Work4ceError('invalid_connector_update',422)
+        reason=reason.strip()
+        with self._connection(write=True) as connection:
+            current=self._connector_record(connection,tenant,connector_id,lock=True)
+            if current['revision']!=expected_revision or current['enabled']==enabled:
+                raise Work4ceError('connector_revision_conflict',409)
+            instant=now()
+            values={'enabled':int(enabled),'revision':expected_revision+1,'changed_by':subject,'changed_at':instant,'change_reason':reason}
+            if enabled:
+                values.update(review_manifest_hash=manifest_hash,reviewed_by=subject,reviewed_at=instant,review_reason=reason)
+            changed=connection.execute(update(connector_state).where(connector_state.c.tenant==tenant,
+                connector_state.c.id==connector_id,connector_state.c.revision==expected_revision,
+                connector_state.c.enabled==int(not enabled)).values(**values))
+            if changed.rowcount!=1:
+                raise Work4ceError('connector_revision_conflict',409)
+            self._audit(connection,tenant,subject,'connector.review_enable' if enabled else 'connector.disable',
+                        connector_id,'revision:'+str(expected_revision+1))
+            return self._connector_record(connection,tenant,connector_id)
 
     def audit_rows(self, tenant: str) -> list[tuple]:
         with self._connection() as connection:
@@ -1058,19 +1152,26 @@ class Store:
             if not row["approver"] or row["approver"] == requester:
                 raise Work4ceError("separation_of_duties",403)
             # Root policy checks allowlists and manifest integrity. This final
-            # database fence also serializes concurrent connector disablement.
+            # database fence also serializes concurrent disablement and binds
+            # any later enable review to this report's exact source definition.
             evidence = report.get("evidence", [])
             if not isinstance(evidence,list):
                 raise Work4ceError("response_connector_unavailable",403)
-            source_ids = set()
+            source_hashes = {}
             for item in evidence:
                 if not isinstance(item,dict) or not isinstance(item.get("connector_id"),str) or not item["connector_id"]:
                     raise Work4ceError("response_connector_unavailable",403)
-                source_ids.add(item["connector_id"])
-            for source_id in sorted(source_ids):
-                source = connection.execute(select(connector_state.c.enabled).where(connector_state.c.tenant == tenant,
-                    connector_state.c.id == source_id).with_for_update()).scalar()
-                if source != 1:
+                binding=item.get('manifest_hash')
+                if binding is not None and (not isinstance(binding,str) or re.fullmatch(r'[0-9a-f]{64}',binding) is None):
+                    raise Work4ceError("response_connector_unavailable",403)
+                source_hashes.setdefault(item['connector_id'],set()).add(binding)
+            for source_id,bindings in sorted(source_hashes.items()):
+                try:
+                    source=self._connector_record(connection,tenant,source_id,lock=True)
+                except Work4ceError:
+                    raise Work4ceError("response_connector_unavailable",403) from None
+                review=source['last_review']
+                if not source['enabled'] or review is not None and bindings!={review['manifest_hash']}:
                     raise Work4ceError("response_connector_unavailable",403)
             result = {"dry_run":True,"performed":False,"action":row["action"],"target":row["target"],
                       "parameters":row["parameters"],"approval_id":approval_id,

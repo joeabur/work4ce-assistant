@@ -2587,3 +2587,93 @@ main {
     justify-content: center;
   }
 }
+
+.connector-controls {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+  display: grid;
+  gap: 16px;
+}
+.connector-control-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.connector-control-heading span,
+.connector-change > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.connector-change {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+}
+.connector-change p {
+  margin: 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.connector-change code,
+.connector-review-details code {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-size: 10px;
+}
+.connector-controls > .button {
+  justify-self: start;
+}
+.connector-review-details {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin: 0 0 20px;
+  padding: 0 16px;
+}
+.connector-review-details > div {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.connector-review-details > div:last-child {
+  border-bottom: 0;
+}
+.connector-review-details dt {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.connector-review-details dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.connector-review-details small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+.connector-review-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  line-height: 1.6;
+}
+.connector-review-confirmation input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 3px 0 0;
+}
+.connector-review-confirmation span {
+  min-width: 0;
+}
